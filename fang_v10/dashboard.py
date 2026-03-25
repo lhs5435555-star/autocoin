@@ -850,7 +850,14 @@ class Dashboard(QMainWindow):
             f'<span style="color:{box_c}">BOX 거래수: {box_n}건</span>'
             f'{" ⚠ 10건 미만" if box_n < 10 else ""}<br>'
             f'SL 선점률: {ph_pct:.1f}% {ph_rec}<br>'
-            f'차단 정확도: {bl_pct:.1f}%'
+            f'차단 정확도: {bl_pct:.1f}%<br>'
+            f'<br><b>== 진단 ==</b><br>'
+            f'레짐분포: {r.diag_regime_bars}<br>'
+            f'시그널생성: {r.diag_signals_generated}건<br>'
+            f'포지션보유중차단: {r.diag_blocked_has_pos}건<br>'
+            f'쿨다운차단: {r.diag_blocked_cooldown}건<br>'
+            f'사이징거부: {r.diag_blocked_sizing}건<br>'
+            f'킬스위치차단: {r.diag_blocked_killswitch}건'
         )
 
         # 레짐별 성과

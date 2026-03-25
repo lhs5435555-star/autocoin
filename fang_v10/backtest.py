@@ -53,6 +53,14 @@ class BacktestResult:
     tp_extension_rate: float = 0.0      # TP1→TP2 연장률
     same_bar_conflict_rate: float = 0.0  # same-bar SL+TP 동시 비율
 
+    # 진단 카운터
+    diag_regime_bars: Dict = field(default_factory=dict)
+    diag_signals_generated: int = 0
+    diag_blocked_has_pos: int = 0
+    diag_blocked_cooldown: int = 0
+    diag_blocked_sizing: int = 0
+    diag_blocked_killswitch: int = 0
+
 
 class BacktestEngine:
     """백테스트 엔진."""
@@ -364,17 +372,23 @@ class BacktestEngine:
                     pending_dca[symbol] = {"key": key, **dca_result}
 
             # ── 6. 신규 진입 신호 ──
+            # 레짐 카운트
+            result.diag_regime_bars[regime.value] = result.diag_regime_bars.get(regime.value, 0) + 1
+
             # 킬스위치 체크
             if not self.risk_eng.can_trade():
+                result.diag_blocked_killswitch += 1
                 continue
 
             can_coin, coin_reason = self.risk_eng.can_trade_coin(symbol)
             if not can_coin:
+                result.diag_blocked_killswitch += 1
                 continue
 
             # 이미 포지션 있으면 스킵
             has_pos = any(p.symbol == symbol for p in pos_mgr.positions.values())
             if has_pos:
+                result.diag_blocked_has_pos += 1
                 continue
 
             # 쿨다운 체크
@@ -398,6 +412,7 @@ class BacktestEngine:
             if not signals:
                 continue
 
+            result.diag_signals_generated += 1
             sig = signals[0]
 
             # 방향별 쿨다운
@@ -415,6 +430,7 @@ class BacktestEngine:
                 sl=sig.sl_price, tp=sig.tp_price, symbol=symbol,
             )
             if not sizing.valid:
+                result.diag_blocked_sizing += 1
                 pos_mgr.blocked.register_blocked(
                     symbol, sig.side, sig.entry_price,
                     sig.sl_price, sig.tp_price,
