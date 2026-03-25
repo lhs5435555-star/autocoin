@@ -151,6 +151,20 @@ class FangConfig:
             setattr(self, key, value)
             logger.info("user_config.json 오버라이드: %s=%s", key, value)
 
+    def reload_env(self) -> None:
+        """환경변수 재로드 (.env 파일 변경 후 호출)."""
+        from dotenv import load_dotenv
+        load_dotenv(override=True)
+        self.API_KEY = os.environ.get("BITGET_API_KEY", "")
+        self.API_SECRET = os.environ.get("BITGET_API_SECRET", "")
+        self.PASSPHRASE = os.environ.get("BITGET_PASSPHRASE", "")
+        if not self.API_KEY or not self.API_SECRET or not self.PASSPHRASE:
+            self.PAPER_TRADING = True
+            logger.warning("API 키 미설정 → PAPER_TRADING=True 강제")
+        else:
+            self.PAPER_TRADING = False
+            logger.info("API 키 로드 완료 → LIVE 모드 가능")
+
 
 # ── 전역 싱글턴 ──
 CONFIG = FangConfig()

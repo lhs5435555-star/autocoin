@@ -835,15 +835,18 @@ class Dashboard(QMainWindow):
         inner = QWidget()
         lay = QVBoxLayout(inner)
 
-        # ── API 키 ──
-        gb_api = QGroupBox("API 연결")
+        # ── 섹션 1: API 연결 ──
+        gb_api = QGroupBox("🔌 API 연결")
         al = QGridLayout(gb_api)
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
+        self.api_key.setPlaceholderText("Bitget API Key")
         self.api_secret = QLineEdit()
         self.api_secret.setEchoMode(QLineEdit.Password)
+        self.api_secret.setPlaceholderText("Bitget Secret")
         self.api_pass = QLineEdit()
         self.api_pass.setEchoMode(QLineEdit.Password)
+        self.api_pass.setPlaceholderText("Bitget Passphrase")
         al.addWidget(QLabel("API Key:"), 0, 0)
         al.addWidget(self.api_key, 0, 1)
         al.addWidget(QLabel("Secret:"), 1, 0)
@@ -856,6 +859,7 @@ class Dashboard(QMainWindow):
         btn_test = QPushButton("🔌 연결 테스트")
         btn_test.clicked.connect(self._test_api)
         self.lbl_api_status = QLabel("🔴 미연결")
+        self.lbl_api_status.setStyleSheet("font-size:14pt; font-weight:bold;")
         btn_row.addWidget(btn_save_api)
         btn_row.addWidget(btn_test)
         btn_row.addWidget(self.lbl_api_status)
@@ -863,8 +867,8 @@ class Dashboard(QMainWindow):
         al.addLayout(btn_row, 3, 0, 1, 2)
         lay.addWidget(gb_api)
 
-        # ── 봇 제어 ──
-        gb_bot = QGroupBox("봇 제어")
+        # ── 섹션 2: 봇 제어 ──
+        gb_bot = QGroupBox("🤖 봇 제어")
         bl = QHBoxLayout(gb_bot)
         btn_start = QPushButton("▶ 시작")
         btn_start.setStyleSheet(f"background:{C_GREEN}; color:black; padding:8px 16px; border-radius:4px;")
@@ -886,8 +890,8 @@ class Dashboard(QMainWindow):
         bl.addStretch()
         lay.addWidget(gb_bot)
 
-        # ── 파라미터 ──
-        gb_param = QGroupBox("트레이딩 파라미터")
+        # ── 섹션 3: 트레이딩 파라미터 ──
+        gb_param = QGroupBox("📊 트레이딩 파라미터")
         gl = QGridLayout(gb_param)
         self._spins: Dict[str, Any] = {}
 
@@ -953,37 +957,59 @@ class Dashboard(QMainWindow):
 
     # ── 탭5 핸들러 ──
     def _save_api(self) -> None:
-        env_path = Path(".env")
-        lines = {}
-        if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    lines[k.strip()] = v.strip()
-        lines["BITGET_API_KEY"] = self.api_key.text()
-        lines["BITGET_API_SECRET"] = self.api_secret.text()
-        lines["BITGET_PASSPHRASE"] = self.api_pass.text()
-        env_path.write_text("\n".join(f"{k}={v}" for k, v in lines.items()) + "\n")
-        os.environ["BITGET_API_KEY"] = self.api_key.text()
-        os.environ["BITGET_API_SECRET"] = self.api_secret.text()
-        os.environ["BITGET_PASSPHRASE"] = self.api_pass.text()
-        CONFIG.API_KEY = self.api_key.text()
-        CONFIG.API_SECRET = self.api_secret.text()
-        CONFIG.PASSPHRASE = self.api_pass.text()
+        env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+        lines: list = []
+        if os.path.exists(env_path):
+            with open(env_path, "r") as f:
+                lines = f.readlines()
+        keys = {
+            "BITGET_API_KEY": self.api_key.text(),
+            "BITGET_API_SECRET": self.api_secret.text(),
+            "BITGET_PASSPHRASE": self.api_pass.text(),
+        }
+        for k, v in keys.items():
+            found = False
+            for i, line in enumerate(lines):
+                if line.startswith(k + "="):
+                    lines[i] = f"{k}={v}\n"
+                    found = True
+                    break
+            if not found:
+                lines.append(f"{k}={v}\n")
+        with open(env_path, "w") as f:
+            f.writelines(lines)
+        CONFIG.reload_env()
         QMessageBox.information(self, "저장", "API 키가 저장되었습니다.")
 
     def _test_api(self) -> None:
-        try:
-            from fang_v10.exchange_api import BitgetClient
-            client = BitgetClient(self.api_key.text() or CONFIG.API_KEY,
-                                  self.api_secret.text() or CONFIG.API_SECRET,
-                                  self.api_pass.text() or CONFIG.PASSPHRASE, paper=False)
-            bal = client.fetch_balance()
-            self.lbl_api_status.setText(f"🟢 연결됨 ${bal:.2f}")
-            QMessageBox.information(self, "성공", f"연결 성공! 잔고: ${bal:.2f}")
-        except Exception as e:
-            self.lbl_api_status.setText("🔴 연결 실패")
-            QMessageBox.warning(self, "실패", f"연결 실패: {e}")
+        from PyQt5.QtCore import QThread as _QT, pyqtSignal as _sig
+
+        class _ApiTestThread(_QT):
+            result = _sig(str)
+
+            def run(self_t):
+                try:
+                    from fang_v10.exchange_api import BitgetClient
+                    client = BitgetClient(
+                        CONFIG.API_KEY, CONFIG.API_SECRET,
+                        CONFIG.PASSPHRASE, paper=False,
+                    )
+                    bal = client.fetch_balance()
+                    self_t.result.emit(f"🟢 연결 성공! 잔고: ${bal:.2f}")
+                except Exception as e:
+                    self_t.result.emit(f"🔴 연결 실패: {e}")
+
+        def _on_result(msg: str):
+            self.lbl_api_status.setText(msg)
+            if "성공" in msg:
+                QMessageBox.information(self, "성공", msg)
+            else:
+                QMessageBox.warning(self, "실패", msg)
+
+        self.lbl_api_status.setText("테스트 중...")
+        self._api_test = _ApiTestThread(self)
+        self._api_test.result.connect(_on_result)
+        self._api_test.start()
 
     def _start_bot(self) -> None:
         from fang_v10.dashboard_tabs import BotThread
