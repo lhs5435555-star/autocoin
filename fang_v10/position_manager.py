@@ -100,6 +100,34 @@ class PositionState:
         """
         return self.calc_risk_r(current_price)
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "PositionState":
+        """dict → PositionState 복원."""
+        pos = cls(symbol=data.get("symbol", ""), side=data.get("side", ""))
+        pos.avg_price = data.get("avg_price", 0)
+        pos.total_size = data.get("total_size", 0)
+        pos.dca_count = data.get("dca_count", 0)
+        pos.leverage = data.get("leverage", 10)
+        pos.atr = data.get("atr", 0)
+        pos.initial_r_distance = data.get("initial_r_distance", 0)
+        pos.tp_count = data.get("tp_count", 0)
+        pos.remaining_ratio = data.get("remaining_ratio", 1.0)
+        pos.be_activated = data.get("be_activated", False)
+        pos.peak_r = data.get("peak_r", 0)
+        pos.trough_r = data.get("trough_r", 0)
+        pos.favorable_extreme = data.get("favorable_extreme", pos.avg_price)
+        pos.realized_pnl = data.get("realized_pnl", 0)
+        pos.entry_bar = data.get("entry_bar", 0)
+        pos.entry_time = data.get("entry_time", 0)
+        pos.regime = data.get("regime", "")
+        pos.strategy = data.get("strategy", "")
+        entries_raw = data.get("entries", [])
+        if entries_raw:
+            pos.entries = [(e[0], e[1]) for e in entries_raw if len(e) >= 2]
+        elif pos.avg_price > 0 and pos.total_size > 0:
+            pos.entries = [(pos.avg_price, pos.total_size)]
+        return pos
+
     def update_peaks(self, current_price: float) -> None:
         """R 피크/트로프 및 favorable_extreme 갱신."""
         current_r = self.calc_risk_r(current_price)
@@ -505,7 +533,8 @@ class PositionManager:
         # ── 8. TP2 ──
         if current_r >= CONFIG.TP2_R and pos.tp_count == 1:
             # 잔량의 60% = 전체의 약 30%
-            return {"action": "partial", "ratio": 0.60, "reason": "TP2"}
+            tp2_close_ratio = CONFIG.TP2_RATIO / (1.0 - CONFIG.TP1_RATIO)
+            return {"action": "partial", "ratio": tp2_close_ratio, "reason": "TP2"}
 
         # ── 9. TP3 트레일 ──
         if pos.tp_count >= 2:

@@ -281,11 +281,13 @@ class BacktestEngine:
                         equity += pnl
                         result.total_pnl += pnl
 
-                        # 통계
+                        # 통계 (진입 시점 레짐 기준)
                         tp_stats[reason] = tp_stats.get(reason, 0) + 1
-                        if regime_key in regime_stats:
-                            regime_stats[regime_key]["trades"] += 1
-                            regime_stats[regime_key]["pnl"] += pnl
+                        entry_regime = pos.regime or regime_key
+                        if entry_regime not in regime_stats:
+                            regime_stats[entry_regime] = {"bars": 0, "trades": 0, "pnl": 0.0}
+                        regime_stats[entry_regime]["trades"] += 1
+                        regime_stats[entry_regime]["pnl"] += pnl
 
                         if pos.be_activated and reason == "BE":
                             be_exit_count += 1

@@ -209,21 +209,40 @@ class BotThread(QThread):
 
             while self.running:
                 try:
-                    btc_df = None
                     df = None
+
+                    # BTC 데이터 먼저 확보 (ETH BTC필터에 필요)
+                    btc_df = None
+                    btc_symbol = next(
+                        (s for s in CONFIG.SYMBOLS if "BTC" in s), None,
+                    )
+                    if btc_symbol:
+                        try:
+                            btc_df = client.fetch_ohlcv(
+                                btc_symbol, CONFIG.TIMEFRAME_PRIMARY, 300,
+                            )
+                            if btc_df is not None and not btc_df.empty:
+                                btc_df = ensure_indicators(btc_df)
+                            else:
+                                btc_df = None
+                        except Exception as e:
+                            self.log_message.emit(f"BTC 데이터 실패: {e}")
 
                     for symbol in CONFIG.SYMBOLS:
                         # ── 1. 캔들 갱신 ──
-                        try:
-                            df = client.fetch_ohlcv(symbol, CONFIG.TIMEFRAME_PRIMARY, 300)
-                        except Exception as e:
-                            self.log_message.emit(f"fetch_ohlcv 실패 {symbol}: {e}")
-                            continue
+                        if "BTC" in symbol and btc_df is not None:
+                            df = btc_df
+                        else:
+                            try:
+                                df = client.fetch_ohlcv(
+                                    symbol, CONFIG.TIMEFRAME_PRIMARY, 300,
+                                )
+                            except Exception as e:
+                                self.log_message.emit(f"fetch_ohlcv 실패 {symbol}: {e}")
+                                continue
                         if df is None or df.empty:
                             continue
                         df = ensure_indicators(df)
-                        if "BTC" in symbol:
-                            btc_df = df
 
                         bar_idx = len(df) - 1
                         price = float(df.iloc[-1]["close"])
@@ -278,6 +297,19 @@ class BotThread(QThread):
                                     result = executor.safe_dca(symbol, pos.side, sizing)
                                     if result:
                                         pos.add_dca(price, sizing.amount)
+                                        # DCA 후 새 평균가 기준 SL 재설정
+                                        if not CONFIG.PAPER_TRADING:
+                                            if pos.side == "long":
+                                                new_sl = pos.avg_price - pos.initial_r_distance
+                                            else:
+                                                new_sl = pos.avg_price + pos.initial_r_distance
+                                            try:
+                                                client.cancel_trigger_orders(symbol)
+                                                new_amount = pos.total_size * pos.remaining_ratio
+                                                client.set_trigger_sl(symbol, pos.side, new_sl, new_amount)
+                                            except Exception as e:
+                                                self.log_message.emit(f"DCA SL 재설정 실패: {e}")
+                                                executor.safe_close(symbol, pos.side, "DCA_SL_FAIL")
                                         self.trade_executed.emit({
                                             "symbol": symbol, "type": "DCA",
                                             "price": price,
@@ -296,12 +328,21 @@ class BotThread(QThread):
                             reason = exit_sig["reason"]
 
                             if action == "close":
+                                close_size = pos.total_size * pos.remaining_ratio
                                 result = executor.safe_close(symbol, pos.side, reason)
                                 if result:
-                                    pnl = SafeExecutor.calc_paper_pnl(
-                                        pos.side, pos.avg_price, price,
-                                        pos.total_size, asset,
-                                    )["net_pnl"] if CONFIG.PAPER_TRADING else 0
+                                    if CONFIG.PAPER_TRADING:
+                                        pnl = SafeExecutor.calc_paper_pnl(
+                                            pos.side, pos.avg_price, price,
+                                            close_size, asset,
+                                        )["net_pnl"]
+                                    else:
+                                        if pos.side == "long":
+                                            gross = (price - pos.avg_price) * close_size
+                                        else:
+                                            gross = (pos.avg_price - price) * close_size
+                                        fee = close_size * pos.avg_price * 2 * CONFIG.EFFECTIVE_TAKER_FEE
+                                        pnl = gross - fee
                                     r_val = pos.calc_risk_r(price)
                                     risk_eng.record_trade(pnl, symbol)
                                     executor.record_trade_result(
@@ -327,16 +368,29 @@ class BotThread(QThread):
 
                             elif action == "partial":
                                 ratio = exit_sig["ratio"]
+                                partial_size = pos.total_size * pos.remaining_ratio * ratio
                                 result = executor.safe_partial_close(
                                     symbol, pos.side, ratio, reason,
                                 )
                                 if result:
+                                    # 부분청산 PnL 계산
+                                    if pos.side == "long":
+                                        partial_gross = (price - pos.avg_price) * partial_size
+                                    else:
+                                        partial_gross = (pos.avg_price - price) * partial_size
+                                    partial_fee = partial_size * pos.avg_price * 2 * CONFIG.EFFECTIVE_TAKER_FEE
+                                    partial_pnl = partial_gross - partial_fee
+                                    risk_eng.record_trade(partial_pnl, symbol)
+                                    pos.realized_pnl += partial_pnl
+                                    balance += partial_pnl
+
                                     pos.tp_count += 1
                                     pos.remaining_ratio -= ratio
                                     pos.total_size *= (1 - ratio)
                                     self.trade_executed.emit({
                                         "symbol": symbol, "type": reason,
-                                        "price": price, "reason": reason,
+                                        "price": price, "pnl": partial_pnl,
+                                        "reason": reason,
                                     })
 
                             elif action == "move_sl":
@@ -360,6 +414,8 @@ class BotThread(QThread):
                             continue
                         mdd_result = mdd.update(balance)
                         if not mdd_result["allowed"]:
+                            continue
+                        if len(pos_mgr.positions) >= CONFIG.MAX_OPEN_POSITIONS:
                             continue
                         r_1_usd = balance * CONFIG.RISK_PER_TRADE_PCT / 100
                         total_risk_r = 0.0
@@ -386,7 +442,14 @@ class BotThread(QThread):
                             continue
                         sig = signals[0]
 
-                        if "ETH" in symbol and btc_df is not None:
+                        if "ETH" in symbol:
+                            if btc_df is None:
+                                pos_mgr.blocked.register_blocked(
+                                    symbol, sig.side, sig.entry_price,
+                                    sig.sl_price, sig.tp_price,
+                                    "BTC데이터없음→ETH차단", bar_idx,
+                                )
+                                continue
                             can_eth, eth_reason = can_enter_eth(btc_df, sig.side)
                             if not can_eth:
                                 pos_mgr.blocked.register_blocked(

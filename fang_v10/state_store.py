@@ -29,34 +29,7 @@ def restore_positions(
 
     count = 0
     for key, d in saved_pos.items():
-        pos = PositionState(
-            symbol=d.get("symbol", ""),
-            side=d.get("side", ""),
-        )
-        pos.avg_price = d.get("avg_price", 0)
-        pos.total_size = d.get("total_size", 0)
-        pos.dca_count = d.get("dca_count", 0)
-        pos.leverage = d.get("leverage", 10)
-        pos.atr = d.get("atr", 0)
-        pos.initial_r_distance = d.get("initial_r_distance", 0)
-        pos.tp_count = d.get("tp_count", 0)
-        pos.remaining_ratio = d.get("remaining_ratio", 1.0)
-        pos.be_activated = d.get("be_activated", False)
-        pos.peak_r = d.get("peak_r", 0)
-        pos.trough_r = d.get("trough_r", 0)
-        pos.favorable_extreme = d.get("favorable_extreme", pos.avg_price)
-        pos.realized_pnl = d.get("realized_pnl", 0)
-        pos.entry_bar = d.get("entry_bar", 0)
-        pos.entry_time = d.get("entry_time", 0)
-        pos.regime = d.get("regime", "")
-        pos.strategy = d.get("strategy", "")
-        # entries 복원
-        entries_raw = d.get("entries", [])
-        if entries_raw:
-            pos.entries = [(e[0], e[1]) for e in entries_raw if len(e) >= 2]
-        elif pos.avg_price > 0 and pos.total_size > 0:
-            pos.entries = [(pos.avg_price, pos.total_size)]
-        pos_mgr.positions[key] = pos
+        pos_mgr.positions[key] = PositionState.from_dict(d)
         count += 1
 
     if count:
