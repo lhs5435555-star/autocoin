@@ -165,6 +165,21 @@ class FangConfig:
             self.PAPER_TRADING = False
             logger.info("API 키 로드 완료 → LIVE 모드 가능")
 
+    def sync_to_json(self) -> None:
+        """현재 CONFIG 값을 user_config.json에 저장."""
+        config_path = Path(self.DATA_DIR) / "user_config.json"
+        skip = {"API_KEY", "API_SECRET", "PASSPHRASE", "DATA_DIR", "PAPER_TRADING"}
+        data = {}
+        for fld in self.__dataclass_fields__:
+            if fld in skip:
+                continue
+            data[fld] = getattr(self, fld)
+        config_path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        logger.info("user_config.json 저장 완료")
+
 
 # ── 전역 싱글턴 ──
 CONFIG = FangConfig()
