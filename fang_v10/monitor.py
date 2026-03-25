@@ -165,6 +165,7 @@ def log_exit(
     hold_bars: int, equity: float,
     regime: str = "", strategy: str = "",
     indicators: Optional[Dict] = None,
+    entry_price: float = 0.0,
 ) -> Dict:
     """청산 로그 레코드."""
     record = {
@@ -172,7 +173,7 @@ def log_exit(
         "symbol": symbol,
         "side": side,
         "type": reason,
-        "entry_price": 0,  # 호출자가 채움
+        "entry_price": entry_price,
         "exit_price": exit_price,
         "pnl_usd": round(pnl, 4),
         "r_value": round(r_value, 3),

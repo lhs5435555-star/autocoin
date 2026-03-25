@@ -23,8 +23,10 @@ from fang_v10.monitor import (
 from fang_v10.position_manager import PositionManager
 from fang_v10.regime_engine import RegimeEngine, ensure_indicators
 from fang_v10.risk_engine import MddTracker, RiskEngine
-from fang_v10.sizing_engine import calc_position_size
-from fang_v10.state_store import StateStore
+from fang_v10.sizing_engine import calc_position_size, check_dca_risk_gate
+from fang_v10.state_store import (
+    StateStore, restore_positions, restore_risk_state, restore_mdd_state,
+)
 from fang_v10.strategy import generate_signals
 
 logger = logging.getLogger("fang_v10")
@@ -55,6 +57,12 @@ async def main_loop() -> None:
 
     risk_eng.set_initial_balance(balance)
     saved_pos, saved_risk, saved_mdd = state.load()
+
+    # 포지션/리스크/MDD 복원
+    if saved_pos:
+        restore_positions(saved_pos, pos_mgr)
+    restore_risk_state(saved_risk, risk_eng)
+    restore_mdd_state(saved_mdd, mdd, balance)
 
     # 거래소 Reconcile
     if not CONFIG.PAPER_TRADING:
@@ -126,6 +134,7 @@ async def main_loop() -> None:
                                     pnl, r_val, pos.peak_r, pos.trough_r,
                                     bar_idx - pos.entry_bar, balance,
                                     regime=pos.regime, strategy=pos.strategy,
+                                    entry_price=pos.avg_price,
                                 )
                                 state.save_trade_log(record)
                                 del pos_mgr.positions[key]
@@ -158,14 +167,32 @@ async def main_loop() -> None:
                         ema9=ema9, ema21=ema21,
                     )
                     if dca_result:
+                        open_positions = [
+                            {"symbol": pp.symbol,
+                             "margin": pp.total_size * pp.remaining_ratio,
+                             "initial_risk_1r_usd": (
+                                 pp.total_size * pp.remaining_ratio
+                                 * pp.initial_r_distance / pp.avg_price
+                             ) if pp.avg_price > 0 else 0}
+                            for pp in pos_mgr.positions.values()
+                        ]
+                        dca_margin = pos.total_size * CONFIG.DCA_SIZE_RATIO
+                        allowed, gate_reason = check_dca_risk_gate(
+                            symbol, dca_margin, balance, open_positions,
+                        )
+                        if not allowed:
+                            logger.info("DCA 거부: %s — %s", symbol, gate_reason)
+                            continue
+
                         sizing = calc_position_size(
                             balance, price, pos.avg_price - pos.initial_r_distance,
                             pos.avg_price + pos.initial_r_distance * CONFIG.TP1_R,
                             symbol,
                         )
                         if sizing.valid:
-                            executor.safe_dca(symbol, pos.side, sizing)
-                            pos.add_dca(price, sizing.amount)
+                            result = executor.safe_dca(symbol, pos.side, sizing)
+                            if result:
+                                pos.add_dca(price, sizing.amount)
 
                 # ── 5. 킬스위치 + MDD ──
                 if not risk_eng.can_trade():
@@ -182,10 +209,15 @@ async def main_loop() -> None:
                     logger.warning("MDD 한도: %s", mdd_result["reason"])
                     continue
 
-                # 동시보유 총리스크 체크
-                total_risk_r = sum(
-                    1.0 for p in pos_mgr.positions.values()
-                )
+                # 동시보유 총리스크 체크 (실제 R 기반)
+                r_1_usd = balance * CONFIG.RISK_PER_TRADE_PCT / 100
+                total_risk_r = 0.0
+                for p in pos_mgr.positions.values():
+                    pos_risk_usd = (
+                        p.total_size * p.remaining_ratio
+                        * p.initial_r_distance / p.avg_price
+                    ) if p.avg_price > 0 else 0
+                    total_risk_r += pos_risk_usd / r_1_usd if r_1_usd > 0 else 0
                 if total_risk_r >= CONFIG.MAX_TOTAL_RISK_R:
                     continue
 
@@ -231,8 +263,8 @@ async def main_loop() -> None:
             # ── 8. 상태 저장 ──
             state.save(
                 {k: vars(v) for k, v in pos_mgr.positions.items()},
-                risk_eng.get_risk_mode(),
-                mdd.update(balance),
+                risk_eng.get_state(),
+                mdd.get_state(),
             )
 
             loop_count += 1

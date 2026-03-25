@@ -17,6 +17,83 @@ from fang_v10.config import CONFIG
 logger = logging.getLogger(__name__)
 
 
+def restore_positions(
+    saved_pos: Dict[str, Any], pos_mgr: Any,
+) -> int:
+    """저장된 포지션 dict → PositionState 재구성 후 pos_mgr에 주입.
+
+    Returns:
+        복원된 포지션 수
+    """
+    from fang_v10.position_manager import PositionState
+
+    count = 0
+    for key, d in saved_pos.items():
+        pos = PositionState(
+            symbol=d.get("symbol", ""),
+            side=d.get("side", ""),
+        )
+        pos.avg_price = d.get("avg_price", 0)
+        pos.total_size = d.get("total_size", 0)
+        pos.dca_count = d.get("dca_count", 0)
+        pos.leverage = d.get("leverage", 10)
+        pos.atr = d.get("atr", 0)
+        pos.initial_r_distance = d.get("initial_r_distance", 0)
+        pos.tp_count = d.get("tp_count", 0)
+        pos.remaining_ratio = d.get("remaining_ratio", 1.0)
+        pos.be_activated = d.get("be_activated", False)
+        pos.peak_r = d.get("peak_r", 0)
+        pos.trough_r = d.get("trough_r", 0)
+        pos.favorable_extreme = d.get("favorable_extreme", pos.avg_price)
+        pos.realized_pnl = d.get("realized_pnl", 0)
+        pos.entry_bar = d.get("entry_bar", 0)
+        pos.entry_time = d.get("entry_time", 0)
+        pos.regime = d.get("regime", "")
+        pos.strategy = d.get("strategy", "")
+        # entries 복원
+        entries_raw = d.get("entries", [])
+        if entries_raw:
+            pos.entries = [(e[0], e[1]) for e in entries_raw if len(e) >= 2]
+        elif pos.avg_price > 0 and pos.total_size > 0:
+            pos.entries = [(pos.avg_price, pos.total_size)]
+        pos_mgr.positions[key] = pos
+        count += 1
+
+    if count:
+        logger.info("포지션 복원 완료: %d개", count)
+    return count
+
+
+def restore_risk_state(
+    saved_risk: Dict[str, Any], risk_eng: Any,
+) -> None:
+    """저장된 리스크 상태를 RiskEngine에 복원."""
+    if not saved_risk:
+        return
+    risk_eng._daily_pnl = saved_risk.get("daily_pnl", risk_eng._daily_pnl)
+    risk_eng._global_consec = saved_risk.get("consecutive_losses",
+                                              risk_eng._global_consec)
+    risk_eng._trading_stopped = saved_risk.get("trading_stopped",
+                                                risk_eng._trading_stopped)
+    logger.info("리스크 상태 복원: daily_pnl=%.2f, consec=%d",
+                risk_eng._daily_pnl, risk_eng._global_consec)
+
+
+def restore_mdd_state(
+    saved_mdd: Dict[str, Any], mdd: Any, balance: float,
+) -> None:
+    """저장된 MDD 상태를 MddTracker에 복원."""
+    if not saved_mdd:
+        return
+    mdd._weekly_peak = saved_mdd.get("weekly_peak", balance)
+    mdd._monthly_peak = saved_mdd.get("monthly_peak", balance)
+    mdd._weekly_dd = saved_mdd.get("weekly_dd", 0)
+    mdd._monthly_dd = saved_mdd.get("monthly_dd", 0)
+    mdd._monthly_stopped = saved_mdd.get("monthly_stopped", False)
+    logger.info("MDD 상태 복원: w_peak=%.2f, m_peak=%.2f",
+                mdd._weekly_peak, mdd._monthly_peak)
+
+
 class StateStore:
     """상태 영속 저장소. ~/.fang_v10/state.json"""
 

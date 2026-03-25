@@ -155,10 +155,12 @@ class BotThread(QThread):
         from fang_v10.regime_engine import RegimeEngine, ensure_indicators
         from fang_v10.position_manager import PositionManager
         from fang_v10.risk_engine import RiskEngine, MddTracker
-        from fang_v10.sizing_engine import calc_position_size
+        from fang_v10.sizing_engine import calc_position_size, check_dca_risk_gate
         from fang_v10.strategy import generate_signals
         from fang_v10.btc_filter import can_enter_eth
-        from fang_v10.state_store import StateStore
+        from fang_v10.state_store import (
+            StateStore, restore_positions, restore_risk_state, restore_mdd_state,
+        )
         from fang_v10.monitor import (
             setup_logging, log_exit, log_state,
             log_phantom_stats, log_blocked_stats,
@@ -182,6 +184,11 @@ class BotThread(QThread):
 
             # 재시작 복구
             saved_pos, saved_risk, saved_mdd = store.load()
+            if saved_pos:
+                restore_positions(saved_pos, pos_mgr)
+            restore_risk_state(saved_risk, risk_eng)
+            restore_mdd_state(saved_mdd, mdd, balance)
+
             if not CONFIG.PAPER_TRADING:
                 exchange_positions = []
                 for s in CONFIG.SYMBOLS:
@@ -192,7 +199,7 @@ class BotThread(QThread):
                         pos = None
                     if pos:
                         exchange_positions.append(pos)
-                saved_pos = store.reconcile(
+                store.reconcile(
                     saved_pos, exchange_positions, client, risk_eng,
                 )
 
@@ -244,6 +251,23 @@ class BotThread(QThread):
                                 ema9=ema9, ema21=ema21,
                             )
                             if dca_result:
+                                open_positions = [
+                                    {"symbol": pp.symbol,
+                                     "margin": pp.total_size * pp.remaining_ratio,
+                                     "initial_risk_1r_usd": (
+                                         pp.total_size * pp.remaining_ratio
+                                         * pp.initial_r_distance / pp.avg_price
+                                     ) if pp.avg_price > 0 else 0}
+                                    for pp in pos_mgr.positions.values()
+                                ]
+                                dca_margin = pos.total_size * CONFIG.DCA_SIZE_RATIO
+                                allowed, gate_reason = check_dca_risk_gate(
+                                    symbol, dca_margin, balance, open_positions,
+                                )
+                                if not allowed:
+                                    self.log_message.emit(f"DCA 거부: {gate_reason}")
+                                    continue
+
                                 sizing = calc_position_size(
                                     balance, price,
                                     pos.avg_price - pos.initial_r_distance,
@@ -290,6 +314,7 @@ class BotThread(QThread):
                                         pnl, r_val, pos.peak_r, pos.trough_r,
                                         bar_idx - pos.entry_bar, balance,
                                         regime=pos.regime, strategy=pos.strategy,
+                                        entry_price=pos.avg_price,
                                     )
                                     store.save_trade_log(record)
                                     del pos_mgr.positions[key]
@@ -336,9 +361,14 @@ class BotThread(QThread):
                         mdd_result = mdd.update(balance)
                         if not mdd_result["allowed"]:
                             continue
-                        total_risk_r = sum(
-                            1.0 for p in pos_mgr.positions.values()
-                        )
+                        r_1_usd = balance * CONFIG.RISK_PER_TRADE_PCT / 100
+                        total_risk_r = 0.0
+                        for p in pos_mgr.positions.values():
+                            pos_risk_usd = (
+                                p.total_size * p.remaining_ratio
+                                * p.initial_r_distance / p.avg_price
+                            ) if p.avg_price > 0 else 0
+                            total_risk_r += pos_risk_usd / r_1_usd if r_1_usd > 0 else 0
                         if total_risk_r >= CONFIG.MAX_TOTAL_RISK_R:
                             continue
                         has_pos = any(
@@ -397,8 +427,8 @@ class BotThread(QThread):
                     # ── 8. 상태 저장 ──
                     store.save(
                         {k: vars(v) for k, v in pos_mgr.positions.items()},
-                        risk_eng.get_risk_mode(),
-                        mdd.update(balance),
+                        risk_eng.get_state(),
+                        mdd.get_state(),
                     )
 
                     loop_count += 1

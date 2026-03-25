@@ -152,6 +152,14 @@ class RiskEngine:
         return {"mode": "NORMAL", "size_mult": 1.0,
                 "can_enter": True, "reason": "정상"}
 
+    def get_state(self) -> Dict:
+        """직렬화 가능한 리스크 상태 반환 (재시작 복원용)."""
+        mode = self.get_risk_mode()
+        mode["daily_pnl"] = self._daily_pnl
+        mode["consecutive_losses"] = self._global_consec
+        mode["trading_stopped"] = self._trading_stopped
+        return mode
+
     def can_trade(self) -> bool:
         """전체 매매 가능 여부."""
         self._check_daily_reset()
@@ -291,6 +299,16 @@ class MddTracker:
             "reason": reason,
             "weekly_dd": round(self._weekly_dd, 4),
             "monthly_dd": round(self._monthly_dd, 4),
+        }
+
+    def get_state(self) -> Dict:
+        """직렬화 가능한 MDD 상태 반환 (재시작 복원용)."""
+        return {
+            "weekly_peak": self._weekly_peak,
+            "monthly_peak": self._monthly_peak,
+            "weekly_dd": self._weekly_dd,
+            "monthly_dd": self._monthly_dd,
+            "monthly_stopped": self._monthly_stopped,
         }
 
     def reset_monthly_stop(self, balance: float) -> None:

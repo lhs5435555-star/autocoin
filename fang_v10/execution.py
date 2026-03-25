@@ -314,16 +314,21 @@ class SafeExecutor:
 
         # SL 수량 갱신 (잔량에 맞게)
         if remaining >= min_amount:
-            try:
-                self.client.cancel_trigger_orders(symbol)
-                sl_price = float(pos.get("stopLossPrice", 0) or 0)
-                if sl_price > 0:
+            sl_price = float(pos.get("stopLossPrice", 0) or 0)
+            if sl_price > 0:
+                try:
+                    self.client.cancel_trigger_orders(symbol)
+                    formatted_remaining = self.client.format_amount(symbol, remaining)
                     self.client.set_trigger_sl(
-                        symbol, side, sl_price,
-                        self.client.format_amount(symbol, remaining),
+                        symbol, side, sl_price, formatted_remaining,
                     )
-            except Exception as e:
-                logger.error("SL 수량 갱신 실패 %s: %s", symbol, e)
+                    if not self._verify_sl_registered(symbol, side, sl_price):
+                        raise Exception("SL 재설정 확인 실패")
+                except Exception as e:
+                    logger.critical(
+                        "부분청산 후 SL 재설정 실패 → 잔량 비상청산: %s — %s", symbol, e,
+                    )
+                    self.safe_close(symbol, side, "SL_RESET_FAIL")
 
         logger.info(
             "%s %s 부분청산 %.1f%% (%s): 수량=%.6f",
@@ -403,12 +408,18 @@ class SafeExecutor:
         total = float(pos.get("contracts", 0) or 0) + amount
         try:
             self.client.cancel_trigger_orders(symbol)
+            formatted_total = self.client.format_amount(symbol, total)
             self.client.set_trigger_sl(
-                symbol, side, dca_sizing.sl_price,
-                self.client.format_amount(symbol, total),
+                symbol, side, dca_sizing.sl_price, formatted_total,
             )
+            if not self._verify_sl_registered(symbol, side, dca_sizing.sl_price):
+                raise Exception("DCA 후 SL 확인 실패")
         except Exception as e:
-            logger.error("DCA 후 SL 재설정 실패 %s: %s", symbol, e)
+            logger.critical(
+                "DCA 후 SL 재설정 실패 → 전체 비상청산: %s — %s", symbol, e,
+            )
+            self.safe_close(symbol, side, "DCA_SL_FAIL")
+            return None
 
         logger.info("DCA 실행: %s %s, 추가수량=%.6f", symbol, side, amount)
         return {
