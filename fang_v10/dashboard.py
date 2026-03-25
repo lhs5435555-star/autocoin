@@ -1,12 +1,13 @@
 """
 PyQt5 데스크톱 대시보드 — FANG SCALPER v10.
 
-탭 3개: 현황 / 거래내역 / 분석.
-봇 로직 없음. trades_log.jsonl + state.json 읽기 전용.
+탭 5개: 현황 / 거래내역 / 분석 / 백테스트 / 설정.
 """
 from __future__ import annotations
 
 import json
+import os
+import time as _time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
@@ -14,10 +15,14 @@ from typing import Any, Dict, List
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
-    QApplication, QComboBox, QFrame, QGroupBox, QHBoxLayout, QHeaderView,
-    QLabel, QMainWindow, QTabWidget, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QApplication, QComboBox, QDoubleSpinBox, QFrame, QGridLayout,
+    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
+    QMessageBox, QProgressBar, QPushButton, QScrollArea, QSpinBox,
+    QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
+
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
 
 from fang_v10.config import CONFIG
 
@@ -136,11 +141,18 @@ class Dashboard(QMainWindow):
         self.setWindowTitle("FANG SCALPER v10")
         self.setMinimumSize(1400, 900)
 
+        self.bot = None
+        self._bt_thread = None
+        self._bt_last_result = None
+        self._bot_start_time = 0
+
         tabs = QTabWidget()
         self.setCentralWidget(tabs)
         tabs.addTab(self._build_tab1(), "📊 현황")
         tabs.addTab(self._build_tab2(), "📋 거래내역")
         tabs.addTab(self._build_tab3(), "📈 분석")
+        tabs.addTab(self._build_tab4(), "🔬 백테스트")
+        tabs.addTab(self._build_tab5(), "⚙ 설정")
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
@@ -542,6 +554,499 @@ class Dashboard(QMainWindow):
             ]
             for c, it in enumerate(items):
                 self.regime_table.setItem(r, c, it)
+
+    # ──────────── 탭 4: 백테스트 ────────────
+    def _build_tab4(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+
+        # 설정 패널
+        cfg = QHBoxLayout()
+        self.bt_sym = QComboBox()
+        self.bt_sym.addItems(["BTC/USDT:USDT", "ETH/USDT:USDT"])
+        self.bt_period = QComboBox()
+        self.bt_period.addItems(["1개월", "3개월", "6개월", "12개월"])
+        self.bt_period.setCurrentIndex(1)
+        self.bt_bal = QDoubleSpinBox()
+        self.bt_bal.setRange(10, 100000)
+        self.bt_bal.setValue(198.0)
+        self.bt_bal.setPrefix("$ ")
+        btn_run = QPushButton("▶ 백테스트 실행")
+        btn_run.setStyleSheet(f"background:{C_HEADER}; padding:8px 16px; border-radius:4px;")
+        btn_run.clicked.connect(self._run_backtest)
+        btn_stop = QPushButton("■ 중지")
+        btn_stop.setStyleSheet(f"background:{C_RED}; padding:8px 12px; border-radius:4px;")
+        btn_stop.clicked.connect(self._stop_backtest)
+        for w in [QLabel("심볼:"), self.bt_sym, QLabel("기간:"), self.bt_period,
+                   QLabel("잔고:"), self.bt_bal, btn_run, btn_stop]:
+            cfg.addWidget(w)
+        cfg.addStretch()
+        lay.addLayout(cfg)
+
+        # 진행바
+        self.bt_progress = QProgressBar()
+        self.bt_progress.setMaximumHeight(20)
+        self.bt_status = QLabel("대기중")
+        self.bt_status.setStyleSheet("color:#999;")
+        lay.addWidget(self.bt_progress)
+        lay.addWidget(self.bt_status)
+
+        # 결과 영역 (숨김)
+        self.bt_result_area = QWidget()
+        rl = QVBoxLayout(self.bt_result_area)
+
+        # 결과 카드 6개
+        cards = QHBoxLayout()
+        self.bt_c = {}
+        for key, title in [("trades", "총거래수"), ("wr", "승률"), ("pf", "PF"),
+                           ("ev", "실측EV"), ("mdd", "MDD"), ("sharpe", "Sharpe")]:
+            c = _card(title, "—")
+            self.bt_c[key] = c
+            cards.addWidget(c)
+        rl.addLayout(cards)
+
+        # Equity curve
+        self.bt_fig = Figure(figsize=(10, 2.5), dpi=100)
+        self.bt_fig.patch.set_facecolor("none")
+        self.bt_ax = self.bt_fig.add_subplot(111)
+        self.bt_canvas = FigureCanvasQTAgg(self.bt_fig)
+        self.bt_canvas.setMinimumHeight(250)
+        self.bt_canvas.setMaximumHeight(250)
+        rl.addWidget(self.bt_canvas)
+
+        # TP 분포
+        self.bt_tp_lay = QVBoxLayout()
+        gb_tp = QGroupBox("TP 분포")
+        gb_tp.setLayout(self.bt_tp_lay)
+        rl.addWidget(gb_tp)
+
+        # 추가 분석
+        gb_extra = QGroupBox("추가 분석")
+        el = QVBoxLayout(gb_extra)
+        self.bt_extra = QLabel("—")
+        self.bt_extra.setWordWrap(True)
+        self.bt_extra.setStyleSheet("font-size:12pt;")
+        el.addWidget(self.bt_extra)
+        rl.addWidget(gb_extra)
+
+        # 레짐별 성과
+        self.bt_regime_table = QTableWidget(0, 5)
+        self.bt_regime_table.setHorizontalHeaderLabels(["레짐", "거래수", "승률", "평균R", "PF"])
+        self.bt_regime_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.bt_regime_table.setAlternatingRowColors(True)
+        self.bt_regime_table.verticalHeader().setVisible(False)
+        self.bt_regime_table.setMaximumHeight(160)
+        rl.addWidget(self.bt_regime_table)
+
+        # 최적화
+        opt_row = QHBoxLayout()
+        btn_opt = QPushButton("⚡ 최적화 실행")
+        btn_opt.setStyleSheet(f"background:{C_ACCENT}; padding:8px 16px; border-radius:4px;")
+        btn_opt.clicked.connect(self._run_optimizer)
+        self.bt_opt_status = QLabel("")
+        opt_row.addWidget(btn_opt)
+        opt_row.addWidget(self.bt_opt_status)
+        opt_row.addStretch()
+        rl.addLayout(opt_row)
+        self.bt_opt_result = QLabel("")
+        self.bt_opt_result.setWordWrap(True)
+        self.bt_opt_result.setStyleSheet("font-size:11pt;")
+        rl.addWidget(self.bt_opt_result)
+
+        # 경보선 안내
+        warn = QLabel("※ 위 수치는 경보선(재테스트 후보)이며 자동 변경 규칙이 아닙니다.")
+        warn.setStyleSheet(f"color:{C_YELLOW}; font-size:11pt; padding:8px;")
+        rl.addWidget(warn)
+
+        self.bt_result_area.setVisible(False)
+        lay.addWidget(self.bt_result_area)
+        lay.addStretch()
+
+        scroll.setWidget(inner)
+        return scroll
+
+    def _run_backtest(self) -> None:
+        from fang_v10.dashboard_tabs import BacktestThread
+        if self._bt_thread and self._bt_thread.isRunning():
+            return
+        months = {"1개월": 1, "3개월": 3, "6개월": 6, "12개월": 12}[self.bt_period.currentText()]
+        self._bt_thread = BacktestThread(self.bt_sym.currentText(), months, self.bt_bal.value())
+        self._bt_thread.progress.connect(self._on_bt_progress)
+        self._bt_thread.finished.connect(self._on_bt_finished)
+        self._bt_thread.error.connect(lambda e: self.bt_status.setText(f"오류: {e}"))
+        self.bt_progress.setValue(0)
+        self.bt_status.setText("시작중...")
+        self.bt_result_area.setVisible(False)
+        self._bt_thread.start()
+
+    def _stop_backtest(self) -> None:
+        if self._bt_thread and self._bt_thread.isRunning():
+            self._bt_thread.stop()
+            self.bt_status.setText("중지됨")
+
+    def _on_bt_progress(self, pct: int, msg: str) -> None:
+        self.bt_progress.setValue(pct)
+        self.bt_status.setText(msg)
+
+    def _on_bt_finished(self, result) -> None:
+        self._bt_last_result = result
+        r = result
+        self._set_card(self.bt_c["trades"], str(r.total_trades))
+        self._set_card(self.bt_c["wr"], f"{r.winrate*100:.1f}%",
+                       C_GREEN if r.winrate >= 0.5 else C_RED)
+        pf_s = f"{r.profit_factor:.2f}" if r.profit_factor != float("inf") else "∞"
+        self._set_card(self.bt_c["pf"], pf_s, C_GREEN if r.profit_factor >= 1 else C_RED)
+        self._set_card(self.bt_c["ev"], f"{r.avg_r:+.3f}R",
+                       C_GREEN if r.avg_r >= 0 else C_RED)
+        self._set_card(self.bt_c["mdd"], f"{r.max_drawdown*100:.1f}%", C_RED)
+        # Sharpe 근사
+        if r.equity_curve and len(r.equity_curve) > 2:
+            import numpy as np
+            rets = np.diff(r.equity_curve) / np.array(r.equity_curve[:-1])
+            sharpe = float(np.mean(rets) / np.std(rets) * np.sqrt(252)) if np.std(rets) > 0 else 0
+        else:
+            sharpe = 0
+        self._set_card(self.bt_c["sharpe"], f"{sharpe:.2f}",
+                       C_GREEN if sharpe >= 1 else C_YELLOW if sharpe >= 0 else C_RED)
+
+        # Equity curve
+        self.bt_ax.clear()
+        self.bt_ax.plot(r.equity_curve, color=C_GREEN, linewidth=1.5)
+        self.bt_ax.set_facecolor("#0a0a1a")
+        self.bt_ax.tick_params(colors="white", labelsize=9)
+        self.bt_ax.set_xlabel("거래", color="white", fontsize=10)
+        self.bt_ax.set_ylabel("잔고($)", color="white", fontsize=10)
+        for spine in self.bt_ax.spines.values():
+            spine.set_color("#333")
+        self.bt_fig.tight_layout()
+        self.bt_canvas.draw()
+
+        # TP 분포
+        while self.bt_tp_lay.count():
+            child = self.bt_tp_lay.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        tp = r.tp_stats or {}
+        max_v = max(tp.values()) if tp else 1
+        bar_colors = {"TP1": C_GREEN, "TP2": C_GREEN, "TRAIL": C_YELLOW,
+                      "SL": C_RED, "BE": C_YELLOW, "EARLY": C_ORANGE,
+                      "TIME": C_ORANGE, "TREND_REV": C_ORANGE, "EMERGENCY": C_RED}
+        for key in ["TP1", "TP2", "TRAIL", "SL", "BE", "EARLY", "TIME", "TREND_REV"]:
+            v = tp.get(key, 0)
+            if v == 0:
+                continue
+            row = QHBoxLayout()
+            lbl = QLabel(f"{key}:")
+            lbl.setFixedWidth(80)
+            bar = QProgressBar()
+            bar.setMaximum(max_v)
+            bar.setValue(v)
+            bar.setFormat(f"{v}건")
+            bc = bar_colors.get(key, C_GRAY)
+            bar.setStyleSheet(f"QProgressBar::chunk {{ background:{bc}; }}"
+                              f"QProgressBar {{ background:{C_BG}; border:none; color:white; }}")
+            bar.setMaximumHeight(22)
+            row.addWidget(lbl)
+            row.addWidget(bar)
+            w = QWidget()
+            w.setLayout(row)
+            self.bt_tp_lay.addWidget(w)
+
+        # 추가 분석
+        def _c(val, thresh, bad_color, good_color=C_GREEN):
+            return bad_color if val >= thresh else good_color
+        be_c = _c(r.be_exit_rate, 0.4, C_RED)
+        tp_ext_c = C_GREEN if r.tp_extension_rate > 0.6 else C_TEXT
+        sbc = _c(r.same_bar_conflict_rate, 0.05, C_YELLOW, C_TEXT)
+        box_n = (r.regime_stats or {}).get("BOX", {}).get("trades", 0)
+        box_c = C_RED if box_n < 10 else C_TEXT
+        ph = r.sl_phantom_stats or {}
+        ph_pct = ph.get("premature_pct", 0)
+        ph_rec = r.sl_phantom_recommendation or ""
+        bl = r.blocked_signal_stats or {}
+        bl_pct = bl.get("correct_block_pct", 0)
+        self.bt_extra.setText(
+            f'<span style="color:{be_c}">BE이탈률: {r.be_exit_rate*100:.1f}%</span>'
+            f'{" ⚠ 40% 초과" if r.be_exit_rate > 0.4 else ""}<br>'
+            f'<span style="color:{tp_ext_c}">TP연장률: {r.tp_extension_rate*100:.1f}%</span><br>'
+            f'<span style="color:{sbc}">same-bar 충돌: {r.same_bar_conflict_rate*100:.1f}%</span>'
+            f'{" ⚠" if r.same_bar_conflict_rate >= 0.05 else ""}<br>'
+            f'<span style="color:{box_c}">BOX 거래수: {box_n}건</span>'
+            f'{" ⚠ 10건 미만" if box_n < 10 else ""}<br>'
+            f'SL 선점률: {ph_pct:.1f}% {ph_rec}<br>'
+            f'차단 정확도: {bl_pct:.1f}%'
+        )
+
+        # 레짐별 성과
+        self.bt_regime_table.setRowCount(0)
+        for reg, d in sorted((r.regime_stats or {}).items()):
+            row = self.bt_regime_table.rowCount()
+            self.bt_regime_table.insertRow(row)
+            trades_n = d.get("trades", 0)
+            pnl_r = d.get("pnl", 0)
+            wr_r = 0
+            avg_r_r = 0
+            pf_r = 0
+            self.bt_regime_table.setItem(row, 0, _make_item(reg))
+            self.bt_regime_table.setItem(row, 1, _make_item(str(trades_n)))
+            self.bt_regime_table.setItem(row, 2, _make_item("—"))
+            self.bt_regime_table.setItem(row, 3, _make_item("—"))
+            self.bt_regime_table.setItem(row, 4, _make_item(f"${pnl_r:.2f}",
+                                         fg=_pnl_color(pnl_r)))
+
+        self.bt_result_area.setVisible(True)
+
+    def _run_optimizer(self) -> None:
+        if not self._bt_last_result:
+            self.bt_opt_status.setText("먼저 백테스트를 실행하세요")
+            return
+        from fang_v10.dashboard_tabs import OptimizerThread
+        self._opt_thread = OptimizerThread(
+            None, self.bt_sym.currentText(), self.bt_bal.value())
+        self._opt_thread.progress.connect(
+            lambda p, m: self.bt_opt_status.setText(f"{p}% {m}"))
+        self._opt_thread.finished.connect(self._on_opt_finished)
+        self._opt_thread.error.connect(lambda e: self.bt_opt_status.setText(f"오류: {e}"))
+        self.bt_opt_status.setText("최적화 실행중...")
+        self._opt_thread.start()
+
+    def _on_opt_finished(self, result) -> None:
+        if not result:
+            self.bt_opt_status.setText("최적화 결과 없음")
+            return
+        changes = result.get("changes", [])
+        rejected = result.get("rejected", [])
+        lines = [f"<b>채택: {len(changes)}건, 기각: {len(rejected)}건</b><br>"]
+        for ch in changes:
+            lines.append(f'<span style="color:{C_GREEN}">✓ {ch["param"]}: '
+                         f'{ch["before"]} → {ch["after"]} (EV {ch["ev_diff"]:+.4f})</span><br>')
+        for rj in rejected:
+            lines.append(f'<span style="color:{C_RED}">✗ {rj["param"]}: '
+                         f'{rj.get("reject_reason", "")}</span><br>')
+        self.bt_opt_result.setText("".join(lines))
+        self.bt_opt_status.setText("완료")
+
+    # ──────────── 탭 5: 설정 ────────────
+    def _build_tab5(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+
+        # ── API 키 ──
+        gb_api = QGroupBox("API 연결")
+        al = QGridLayout(gb_api)
+        self.api_key = QLineEdit()
+        self.api_key.setEchoMode(QLineEdit.Password)
+        self.api_secret = QLineEdit()
+        self.api_secret.setEchoMode(QLineEdit.Password)
+        self.api_pass = QLineEdit()
+        self.api_pass.setEchoMode(QLineEdit.Password)
+        al.addWidget(QLabel("API Key:"), 0, 0)
+        al.addWidget(self.api_key, 0, 1)
+        al.addWidget(QLabel("Secret:"), 1, 0)
+        al.addWidget(self.api_secret, 1, 1)
+        al.addWidget(QLabel("Passphrase:"), 2, 0)
+        al.addWidget(self.api_pass, 2, 1)
+        btn_row = QHBoxLayout()
+        btn_save_api = QPushButton("💾 저장")
+        btn_save_api.clicked.connect(self._save_api)
+        btn_test = QPushButton("🔌 연결 테스트")
+        btn_test.clicked.connect(self._test_api)
+        self.lbl_api_status = QLabel("🔴 미연결")
+        btn_row.addWidget(btn_save_api)
+        btn_row.addWidget(btn_test)
+        btn_row.addWidget(self.lbl_api_status)
+        btn_row.addStretch()
+        al.addLayout(btn_row, 3, 0, 1, 2)
+        lay.addWidget(gb_api)
+
+        # ── 봇 제어 ──
+        gb_bot = QGroupBox("봇 제어")
+        bl = QHBoxLayout(gb_bot)
+        btn_start = QPushButton("▶ 시작")
+        btn_start.setStyleSheet(f"background:{C_GREEN}; color:black; padding:8px 16px; border-radius:4px;")
+        btn_start.clicked.connect(self._start_bot)
+        btn_stop_bot = QPushButton("■ 정지")
+        btn_stop_bot.setStyleSheet(f"background:{C_RED}; padding:8px 16px; border-radius:4px;")
+        btn_stop_bot.clicked.connect(self._stop_bot)
+        btn_restart = QPushButton("⟳ 재시작")
+        btn_restart.clicked.connect(self._restart_bot)
+        self.lbl_mode = QLabel("📝 PAPER" if CONFIG.PAPER_TRADING else "🔴 LIVE")
+        if not CONFIG.PAPER_TRADING:
+            self.lbl_mode.setStyleSheet(f"color:{C_RED}; font-weight:bold;")
+        self.lbl_bot_status = QLabel("정지됨")
+        bl.addWidget(btn_start)
+        bl.addWidget(btn_stop_bot)
+        bl.addWidget(btn_restart)
+        bl.addWidget(self.lbl_mode)
+        bl.addWidget(self.lbl_bot_status)
+        bl.addStretch()
+        lay.addWidget(gb_bot)
+
+        # ── 파라미터 ──
+        gb_param = QGroupBox("트레이딩 파라미터")
+        gl = QGridLayout(gb_param)
+        self._spins: Dict[str, Any] = {}
+
+        def _dspin(label, key, val, lo, hi, step, row, col):
+            gl.addWidget(QLabel(label), row, col * 2)
+            sp = QDoubleSpinBox()
+            sp.setRange(lo, hi)
+            sp.setSingleStep(step)
+            sp.setValue(val)
+            gl.addWidget(sp, row, col * 2 + 1)
+            self._spins[key] = sp
+
+        def _ispin(label, key, val, lo, hi, row, col):
+            gl.addWidget(QLabel(label), row, col * 2)
+            sp = QSpinBox()
+            sp.setRange(lo, hi)
+            sp.setValue(val)
+            gl.addWidget(sp, row, col * 2 + 1)
+            self._spins[key] = sp
+
+        # 컬럼 0: 리스크
+        gl.addWidget(QLabel("── 리스크 ──"), 0, 0, 1, 2)
+        _dspin("1R 비율(%):", "RISK_PER_TRADE_PCT", CONFIG.RISK_PER_TRADE_PCT, 0.1, 5.0, 0.1, 1, 0)
+        _dspin("SL배수 BTC:", "SL_BTC", CONFIG.SL_ATR_MULT.get("BTC", 1.5), 0.5, 5.0, 0.1, 2, 0)
+        _dspin("SL배수 ETH:", "SL_ETH", CONFIG.SL_ATR_MULT.get("ETH", 1.8), 0.5, 5.0, 0.1, 3, 0)
+        _dspin("DCA ATR배수:", "DCA_ATR_MULT", CONFIG.DCA_ATR_MULT, 0.5, 5.0, 0.1, 4, 0)
+
+        # 컬럼 1: TP/SL
+        gl.addWidget(QLabel("── TP/SL ──"), 0, 2, 1, 2)
+        _dspin("TP1 R:", "TP1_R", CONFIG.TP1_R, 0.3, 5.0, 0.1, 1, 1)
+        _dspin("TP1 비율(%):", "TP1_RATIO", CONFIG.TP1_RATIO * 100, 10, 80, 5, 2, 1)
+        _dspin("TP2 R:", "TP2_R", CONFIG.TP2_R, 0.5, 5.0, 0.1, 3, 1)
+        _dspin("TP2 비율(%):", "TP2_RATIO", CONFIG.TP2_RATIO * 100, 10, 80, 5, 4, 1)
+        _dspin("트레일 R:", "TP3_TRAIL_R", CONFIG.TP3_TRAIL_R, 0.1, 3.0, 0.1, 5, 1)
+        _dspin("BE R:", "BE_TRIGGER_R", CONFIG.BE_TRIGGER_R, 0.3, 3.0, 0.1, 6, 1)
+
+        # 컬럼 2: 쿨다운/킬스위치
+        gl.addWidget(QLabel("── 쿨다운/킬스위치 ──"), 0, 4, 1, 2)
+        _ispin("일반(초):", "COOLDOWN_NORMAL_SEC", CONFIG.COOLDOWN_NORMAL_SEC, 10, 600, 1, 2)
+        _ispin("SL후(초):", "COOLDOWN_AFTER_SL_SEC", CONFIG.COOLDOWN_AFTER_SL_SEC, 60, 1800, 2, 2)
+        _ispin("SL+같은방향(초):", "COOLDOWN_AFTER_SL_SAME_DIR_SEC",
+               CONFIG.COOLDOWN_AFTER_SL_SAME_DIR_SEC, 60, 3600, 3, 2)
+        _dspin("일간 SOFT(%):", "DAILY_LOSS_SOFT", CONFIG.DAILY_LOSS_SOFT, 0.5, 5.0, 0.1, 4, 2)
+        _dspin("일간 HARD(%):", "DAILY_LOSS_HARD", CONFIG.DAILY_LOSS_HARD, 0.5, 5.0, 0.1, 5, 2)
+        _dspin("일간 STOP(%):", "DAILY_LOSS_STOP", CONFIG.DAILY_LOSS_STOP, 1.0, 10.0, 0.1, 6, 2)
+        _dspin("월간 MDD(%):", "MONTHLY_MDD_LIMIT", CONFIG.MONTHLY_MDD_LIMIT, 1.0, 20.0, 0.5, 7, 2)
+
+        lay.addWidget(gb_param)
+
+        # 저장 버튼
+        save_row = QHBoxLayout()
+        btn_save_cfg = QPushButton("💾 설정 저장")
+        btn_save_cfg.setStyleSheet(f"background:{C_HEADER}; padding:10px 24px; border-radius:4px;")
+        btn_save_cfg.clicked.connect(self._save_params)
+        save_row.addWidget(btn_save_cfg)
+        save_row.addWidget(QLabel("★ 저장 시 봇 재시작 없이 즉시 반영됩니다"))
+        save_row.addStretch()
+        lay.addLayout(save_row)
+        lay.addStretch()
+
+        scroll.setWidget(inner)
+        return scroll
+
+    # ── 탭5 핸들러 ──
+    def _save_api(self) -> None:
+        env_path = Path(".env")
+        lines = {}
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    lines[k.strip()] = v.strip()
+        lines["BITGET_API_KEY"] = self.api_key.text()
+        lines["BITGET_API_SECRET"] = self.api_secret.text()
+        lines["BITGET_PASSPHRASE"] = self.api_pass.text()
+        env_path.write_text("\n".join(f"{k}={v}" for k, v in lines.items()) + "\n")
+        os.environ["BITGET_API_KEY"] = self.api_key.text()
+        os.environ["BITGET_API_SECRET"] = self.api_secret.text()
+        os.environ["BITGET_PASSPHRASE"] = self.api_pass.text()
+        CONFIG.API_KEY = self.api_key.text()
+        CONFIG.API_SECRET = self.api_secret.text()
+        CONFIG.PASSPHRASE = self.api_pass.text()
+        QMessageBox.information(self, "저장", "API 키가 저장되었습니다.")
+
+    def _test_api(self) -> None:
+        try:
+            from fang_v10.exchange_api import BitgetClient
+            client = BitgetClient(self.api_key.text() or CONFIG.API_KEY,
+                                  self.api_secret.text() or CONFIG.API_SECRET,
+                                  self.api_pass.text() or CONFIG.PASSPHRASE, paper=False)
+            bal = client.fetch_balance()
+            self.lbl_api_status.setText(f"🟢 연결됨 ${bal:.2f}")
+            QMessageBox.information(self, "성공", f"연결 성공! 잔고: ${bal:.2f}")
+        except Exception as e:
+            self.lbl_api_status.setText("🔴 연결 실패")
+            QMessageBox.warning(self, "실패", f"연결 실패: {e}")
+
+    def _start_bot(self) -> None:
+        from fang_v10.dashboard_tabs import BotThread
+        if self.bot and self.bot.isRunning():
+            return
+        self.bot = BotThread()
+        self.bot.state_updated.connect(self._on_bot_state)
+        self.bot.trade_executed.connect(self._on_bot_trade)
+        self.bot.error_occurred.connect(lambda e: self.lbl_bot_status.setText(f"오류: {e}"))
+        self._bot_start_time = _time.time()
+        self.bot.start()
+        self.lbl_bot_status.setText("실행중")
+
+    def _stop_bot(self) -> None:
+        if self.bot:
+            self.bot.stop()
+            self.lbl_bot_status.setText("정지됨")
+
+    def _restart_bot(self) -> None:
+        self._stop_bot()
+        QTimer.singleShot(1000, self._start_bot)
+
+    def _on_bot_state(self, state: dict) -> None:
+        elapsed = int(_time.time() - self._bot_start_time)
+        m, s = divmod(elapsed, 60)
+        self.lbl_bot_status.setText(f"실행중 ⏱ {m}분 {s:02d}초")
+
+    def _on_bot_trade(self, trade: dict) -> None:
+        pass  # 탭2 자동 갱신으로 처리
+
+    def _save_params(self) -> None:
+        cfg = {
+            "RISK_PER_TRADE_PCT": self._spins["RISK_PER_TRADE_PCT"].value(),
+            "SL_ATR_MULT": {
+                "BTC": self._spins["SL_BTC"].value(),
+                "ETH": self._spins["SL_ETH"].value(),
+            },
+            "DCA_ATR_MULT": self._spins["DCA_ATR_MULT"].value(),
+            "TP1_R": self._spins["TP1_R"].value(),
+            "TP1_RATIO": self._spins["TP1_RATIO"].value() / 100,
+            "TP2_R": self._spins["TP2_R"].value(),
+            "TP2_RATIO": self._spins["TP2_RATIO"].value() / 100,
+            "TP3_TRAIL_R": self._spins["TP3_TRAIL_R"].value(),
+            "BE_TRIGGER_R": self._spins["BE_TRIGGER_R"].value(),
+            "COOLDOWN_NORMAL_SEC": self._spins["COOLDOWN_NORMAL_SEC"].value(),
+            "COOLDOWN_AFTER_SL_SEC": self._spins["COOLDOWN_AFTER_SL_SEC"].value(),
+            "COOLDOWN_AFTER_SL_SAME_DIR_SEC": self._spins["COOLDOWN_AFTER_SL_SAME_DIR_SEC"].value(),
+            "DAILY_LOSS_SOFT": self._spins["DAILY_LOSS_SOFT"].value(),
+            "DAILY_LOSS_HARD": self._spins["DAILY_LOSS_HARD"].value(),
+            "DAILY_LOSS_STOP": self._spins["DAILY_LOSS_STOP"].value(),
+            "MONTHLY_MDD_LIMIT": self._spins["MONTHLY_MDD_LIMIT"].value(),
+        }
+        config_path = Path(CONFIG.DATA_DIR) / "user_config.json"
+        existing = {}
+        if config_path.exists():
+            try:
+                existing = json.loads(config_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        existing.update(cfg)
+        config_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+        CONFIG.sync_from_json()
+        QMessageBox.information(self, "저장", "설정이 저장되었습니다. 즉시 반영됩니다.")
 
     # ── 카드 값 업데이트 ──
     @staticmethod
