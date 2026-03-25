@@ -120,15 +120,15 @@ def _check_trend(
     volume_ratio = row.get("volume_ratio", 0)
     atr = row.get("atr", 0)
 
-    if adx < 20 or volume_ratio < 0.8 or atr <= 0:
+    if adx < 25 or volume_ratio < 1.0 or atr <= 0:
         return None
 
     # ── 롱 ──
     if (ema9 > ema21
-            and close > ema21
-            and 40 < rsi < 80):
+            and close > ema9
+            and 50 < rsi < 75):
         ema_dist = (close - ema21) / atr if atr > 0 else 999
-        if ema_dist < 3.0:
+        if ema_dist < 2.0:
             entry = close
             sl, tp = _calc_sl_tp(entry, "long", atr, asset)
             strength = _trend_strength(adx, volume_ratio, rsi)
@@ -142,10 +142,10 @@ def _check_trend(
 
     # ── 숏 (대칭) ──
     if (ema9 < ema21
-            and close < ema21
-            and 20 < rsi < 60):
+            and close < ema9
+            and 25 < rsi < 50):
         ema_dist = (ema21 - close) / atr if atr > 0 else 999
-        if ema_dist < 3.0:
+        if ema_dist < 2.0:
             entry = close
             sl, tp = _calc_sl_tp(entry, "short", atr, asset)
             strength = _trend_strength(adx, volume_ratio, 100 - rsi)
@@ -162,9 +162,9 @@ def _check_trend(
 
 def _trend_strength(adx: float, volume_ratio: float, rsi_score: float) -> float:
     """TREND 신호 강도 0~1 계산."""
-    adx_s = min((adx - 20) / 30, 1.0) if adx >= 20 else 0
-    vr_s = min((volume_ratio - 0.8) / 2.2, 1.0) if volume_ratio >= 0.8 else 0
-    rsi_s = min((rsi_score - 40) / 35, 1.0) if rsi_score >= 40 else 0
+    adx_s = min((adx - 25) / 25, 1.0) if adx >= 25 else 0
+    vr_s = min((volume_ratio - 1.0) / 2.0, 1.0) if volume_ratio >= 1.0 else 0
+    rsi_s = min((rsi_score - 50) / 25, 1.0) if rsi_score >= 50 else 0
     return round(max(0.0, min(1.0, adx_s * 0.4 + vr_s * 0.3 + rsi_s * 0.3)), 3)
 
 
@@ -207,7 +207,7 @@ def _check_box(
     prev_rsi = prev.get("rsi", 50)
 
     # 공통 필터
-    if adx >= 30 or volume_ratio < 0.8 or bb_width <= 0.005 or atr <= 0:
+    if adx >= 25 or volume_ratio < 1.0 or bb_width <= 0.008 or atr <= 0:
         return None
 
     # ── 롱 (반등확인형) ──
