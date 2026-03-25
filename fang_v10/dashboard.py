@@ -1,24 +1,28 @@
 """
 PyQt5 데스크톱 대시보드 — FANG SCALPER v10.
 
-탭 5개: 현황 / 거래내역 / 분석 / 백테스트 / 설정.
+탭 6개: 현황 / 거래내역 / 분석 / 백테스트 / 설정 / 로그.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
+import subprocess
+import sys
 import time as _time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QColor, QFont
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication, QComboBox, QDoubleSpinBox, QFrame, QGridLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QProgressBar, QPushButton, QScrollArea, QSpinBox,
-    QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout,
+    QWidget,
 )
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
@@ -135,7 +139,24 @@ TYPE_COLORS = {
 # Dashboard
 # ════════════════════════════════════════════
 
+class _QTextEditHandler(logging.Handler):
+    """Python logging → pyqtSignal 브릿지."""
+
+    def __init__(self, signal):
+        super().__init__()
+        self.signal = signal
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            self.signal.emit(msg)
+        except Exception:
+            pass
+
+
 class Dashboard(QMainWindow):
+    log_signal = pyqtSignal(str)
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("FANG SCALPER v10")
@@ -155,6 +176,12 @@ class Dashboard(QMainWindow):
         tabs.addTab(self._build_tab3(), "📈 분석")
         tabs.addTab(self._build_tab4(), "🔬 백테스트")
         tabs.addTab(self._build_tab5(), "⚙ 설정")
+        tabs.addTab(self._build_tab6(), "\U0001f4dc 로그")
+
+        # logging → 탭6 연결
+        self._log_lines: List[str] = []
+        self.log_signal.connect(self._append_log_line)
+        self._setup_log_handler()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
@@ -1120,7 +1147,8 @@ class Dashboard(QMainWindow):
         self.bot = BotThread()
         self.bot.state_updated.connect(self._on_bot_state)
         self.bot.trade_executed.connect(self._on_bot_trade)
-        self.bot.error_occurred.connect(lambda e: self.lbl_bot_status.setText(f"오류: {e}"))
+        self.bot.error_occurred.connect(self._on_bot_error)
+        self.bot.log_message.connect(self._on_bot_log)
         self._bot_start_time = _time.time()
         self.bot.start()
         self.lbl_bot_status.setText("실행중")
@@ -1222,7 +1250,34 @@ class Dashboard(QMainWindow):
                     self.pos_table.setItem(r, c, it)
 
     def _on_bot_trade(self, trade: dict) -> None:
-        pass  # 탭2 자동 갱신으로 처리
+        symbol = trade.get("symbol", "?")
+        ttype = trade.get("type", "?")
+        reason = trade.get("reason", "")
+        side = trade.get("side", "")
+        price = trade.get("price", 0)
+        pnl = trade.get("pnl", None)
+
+        parts = [f"거래: {ttype} {symbol}"]
+        if side:
+            parts.append(side.upper())
+        if price:
+            parts.append(f"@{price:.2f}")
+        if pnl is not None:
+            parts.append(f"PnL={'+'if pnl>=0 else ''}{pnl:.2f}")
+        if reason:
+            parts.append(reason)
+
+        logger = logging.getLogger("fang_v10")
+        logger.info(" | ".join(parts))
+
+    def _on_bot_error(self, msg: str) -> None:
+        self.lbl_bot_status.setText(f"오류: {msg}")
+        logger = logging.getLogger("fang_v10")
+        logger.error(msg)
+
+    def _on_bot_log(self, msg: str) -> None:
+        logger = logging.getLogger("fang_v10")
+        logger.info(msg)
 
     def _save_params(self) -> None:
         cfg = {
@@ -1257,6 +1312,148 @@ class Dashboard(QMainWindow):
         config_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
         CONFIG.sync_from_json()
         QMessageBox.information(self, "저장", "설정이 저장되었습니다. 즉시 반영됩니다.")
+
+    # ──────────── 탭 6: 로그 ────────────
+    def _build_tab6(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+
+        # 필터 행
+        filt = QHBoxLayout()
+        self.log_level_cmb = QComboBox()
+        self.log_level_cmb.addItems(["전체", "INFO", "WARNING", "ERROR", "CRITICAL"])
+        self.log_level_cmb.currentIndexChanged.connect(self._refresh_log_view)
+        self.log_sym_cmb = QComboBox()
+        self.log_sym_cmb.addItems(["전체", "BTC", "ETH"])
+        self.log_sym_cmb.currentIndexChanged.connect(self._refresh_log_view)
+
+        btn_clear = QPushButton("\U0001f5d1 로그 지우기")
+        btn_clear.clicked.connect(self._clear_log)
+
+        btn_open = QPushButton("\U0001f4c1 로그 폴더 열기")
+        btn_open.clicked.connect(self._open_log_folder)
+
+        lbl_hint = QLabel("최근 500줄 표시")
+        lbl_hint.setStyleSheet("color:#999;")
+
+        filt.addWidget(QLabel("레벨:"))
+        filt.addWidget(self.log_level_cmb)
+        filt.addWidget(QLabel("심볼:"))
+        filt.addWidget(self.log_sym_cmb)
+        filt.addWidget(btn_clear)
+        filt.addWidget(btn_open)
+        filt.addStretch()
+        filt.addWidget(lbl_hint)
+        lay.addLayout(filt)
+
+        # 로그 텍스트
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setFont(QFont("Consolas", 11))
+        self.log_text.setStyleSheet(
+            "background:#0a0a1a; color:#e0e0e0; border:none; padding:8px;"
+        )
+        lay.addWidget(self.log_text, stretch=1)
+        return w
+
+    def _setup_log_handler(self) -> None:
+        handler = _QTextEditHandler(self.log_signal)
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s | %(levelname)-8s | %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+        root = logging.getLogger("fang_v10")
+        root.addHandler(handler)
+
+    _LOG_LEVEL_ORDER = {"INFO": 0, "WARNING": 1, "ERROR": 2, "CRITICAL": 3}
+    _LOG_COLORS = {
+        "INFO": "#e0e0e0",
+        "WARNING": "#ffc107",
+        "ERROR": "#ff5252",
+        "CRITICAL": "#ff1744",
+    }
+
+    def _append_log_line(self, line: str) -> None:
+        self._log_lines.append(line)
+        if len(self._log_lines) > 500:
+            self._log_lines = self._log_lines[-500:]
+        self._render_one_line(line)
+
+    def _render_one_line(self, line: str) -> None:
+        """필터 통과하면 텍스트에 HTML 한 줄 추가."""
+        level_filter = self.log_level_cmb.currentText()
+        sym_filter = self.log_sym_cmb.currentText()
+
+        if not self._line_passes_filter(line, level_filter, sym_filter):
+            return
+
+        level = self._extract_level(line)
+        color = self._LOG_COLORS.get(level, "#e0e0e0")
+        bold = "font-weight:bold;" if level == "CRITICAL" else ""
+
+        import html as _html
+        escaped = _html.escape(line)
+        self.log_text.append(
+            f"<span style='color:{color};{bold}'>{escaped}</span>"
+        )
+        # 자동 스크롤
+        sb = self.log_text.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    @staticmethod
+    def _extract_level(line: str) -> str:
+        for lvl in ("CRITICAL", "ERROR", "WARNING", "INFO"):
+            if lvl in line:
+                return lvl
+        return "INFO"
+
+    def _line_passes_filter(self, line: str, level_filter: str, sym_filter: str) -> bool:
+        if level_filter != "전체":
+            line_level = self._extract_level(line)
+            min_ord = self._LOG_LEVEL_ORDER.get(level_filter, 0)
+            line_ord = self._LOG_LEVEL_ORDER.get(line_level, 0)
+            if line_ord < min_ord:
+                return False
+        if sym_filter != "전체" and sym_filter not in line:
+            return False
+        return True
+
+    def _refresh_log_view(self) -> None:
+        """필터 변경 시 전체 다시 렌더링."""
+        self.log_text.clear()
+        level_filter = self.log_level_cmb.currentText()
+        sym_filter = self.log_sym_cmb.currentText()
+
+        import html as _html
+        parts = []
+        for line in self._log_lines:
+            if not self._line_passes_filter(line, level_filter, sym_filter):
+                continue
+            level = self._extract_level(line)
+            color = self._LOG_COLORS.get(level, "#e0e0e0")
+            bold = "font-weight:bold;" if level == "CRITICAL" else ""
+            escaped = _html.escape(line)
+            parts.append(f"<span style='color:{color};{bold}'>{escaped}</span>")
+        if parts:
+            self.log_text.setHtml("<br>".join(parts))
+            sb = self.log_text.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
+    def _clear_log(self) -> None:
+        self._log_lines.clear()
+        self.log_text.clear()
+
+    @staticmethod
+    def _open_log_folder() -> None:
+        log_dir = str(Path(CONFIG.DATA_DIR) / "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        if sys.platform == "win32":
+            subprocess.Popen(f'explorer "{log_dir}"')
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", log_dir])
+        else:
+            subprocess.Popen(["xdg-open", log_dir])
 
     # ── 카드 값 업데이트 ──
     @staticmethod

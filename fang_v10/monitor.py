@@ -45,6 +45,22 @@ def setup_logging(log_dir: Optional[str] = None) -> None:
     ))
     root_logger.addHandler(file_handler)
 
+    # 에러 전용 핸들러 — ERROR/CRITICAL만, 일별 rotate
+    error_handler = TimedRotatingFileHandler(
+        filename=str(log_path / "errors.log"),
+        when="midnight",
+        interval=1,
+        backupCount=30,
+        encoding="utf-8",
+    )
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(logging.Formatter(
+        "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s\n%(exc_info)s"
+        if False else "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    root_logger.addHandler(error_handler)
+
     # 콘솔 핸들러
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
@@ -54,7 +70,48 @@ def setup_logging(log_dir: Optional[str] = None) -> None:
     ))
     root_logger.addHandler(console_handler)
 
+    # 거래 전용 로거 초기화 (날짜별 파일)
+    _setup_trade_logger(log_path)
+
     logger.info("로깅 설정 완료: %s", log_path)
+
+
+_trade_log_dir: Optional[Path] = None
+
+
+def _setup_trade_logger(log_path: Path) -> None:
+    """거래 전용 탭구분 로그 파일 초기화 (날짜별)."""
+    global _trade_log_dir
+    _trade_log_dir = log_path
+
+
+def log_trade_to_file(record: Dict) -> None:
+    """거래 레코드를 날짜별 trades_YYYY-MM-DD.log에 탭구분으로 기록."""
+    if _trade_log_dir is None:
+        return
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filepath = _trade_log_dir / f"trades_{today}.log"
+
+    # 헤더가 없으면 추가
+    if not filepath.exists():
+        filepath.write_text(
+            "시간\t심볼\t방향\t타입\t진입가\t청산가\tPnL\tR값\t사유\n",
+            encoding="utf-8",
+        )
+
+    line = (
+        f"{record.get('time', '')}\t"
+        f"{record.get('symbol', '')}\t"
+        f"{record.get('side', '')}\t"
+        f"{record.get('type', '')}\t"
+        f"{record.get('entry_price', 0)}\t"
+        f"{record.get('exit_price', 0)}\t"
+        f"{record.get('pnl_usd', 0)}\t"
+        f"{record.get('r_value', 0)}\t"
+        f"{record.get('reason_detail', record.get('reason', ''))}\n"
+    )
+    with open(filepath, "a", encoding="utf-8") as f:
+        f.write(line)
 
 
 # ──────────────────────────────────────────────
@@ -96,6 +153,7 @@ def log_entry(
         record["symbol"], record["side"], record["strategy"],
         record["entry_price"], record["reason"],
     )
+    log_trade_to_file(record)
     return record
 
 
@@ -135,6 +193,7 @@ def log_exit(
         "EXIT  | %s %s %s | %s%.2f USDT (%.2fR) | %s | %d봉",
         symbol, side, reason, emoji, pnl, r_value, reason_detail, hold_bars,
     )
+    log_trade_to_file(record)
     return record
 
 
@@ -171,6 +230,7 @@ def log_dca(
         "DCA   | %s @ %.2f | new_avg=%.2f, risk=%.2fR",
         symbol, dca_price, new_avg, total_risk_r,
     )
+    log_trade_to_file(record)
     return record
 
 
