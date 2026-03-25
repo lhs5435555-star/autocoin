@@ -99,9 +99,14 @@ class OptimizerThread(QThread):
         try:
             from fang_v10.optimizer import AutoOptimizer
 
-            opt = AutoOptimizer()
+            opt = AutoOptimizer(
+                backtest_engine=None,
+                df=self.df,
+                symbol=self.symbol,
+                initial_balance=self.balance,
+            )
             result = opt.run_optimization(
-                self.df, self.symbol, self.balance,
+                progress_callback=lambda p, m: self.progress.emit(p, m),
             )
 
             if not self._cancel:

@@ -640,25 +640,52 @@ class Dashboard(QMainWindow):
         self.bt_regime_table.setMaximumHeight(160)
         rl.addWidget(self.bt_regime_table)
 
-        # 최적화
+        # 최적화 섹션
+        gb_opt = QGroupBox("🔧 파라미터 자동 최적화")
+        ol = QVBoxLayout(gb_opt)
         opt_row = QHBoxLayout()
         btn_opt = QPushButton("⚡ 최적화 실행")
         btn_opt.setStyleSheet(f"background:{C_ACCENT}; padding:8px 16px; border-radius:4px;")
         btn_opt.clicked.connect(self._run_optimizer)
+        btn_opt_stop = QPushButton("■ 중지")
+        btn_opt_stop.setStyleSheet(f"background:{C_RED}; padding:8px 12px; border-radius:4px;")
+        btn_opt_stop.clicked.connect(self._stop_optimizer)
+        self.bt_opt_progress = QProgressBar()
+        self.bt_opt_progress.setMaximumHeight(18)
         self.bt_opt_status = QLabel("")
         opt_row.addWidget(btn_opt)
+        opt_row.addWidget(btn_opt_stop)
+        opt_row.addWidget(self.bt_opt_progress)
         opt_row.addWidget(self.bt_opt_status)
-        opt_row.addStretch()
-        rl.addLayout(opt_row)
-        self.bt_opt_result = QLabel("")
-        self.bt_opt_result.setWordWrap(True)
-        self.bt_opt_result.setStyleSheet("font-size:11pt;")
-        rl.addWidget(self.bt_opt_result)
+        ol.addLayout(opt_row)
 
-        # 경보선 안내
+        # 결과 테이블
+        self.bt_opt_table = QTableWidget(0, 4)
+        self.bt_opt_table.setHorizontalHeaderLabels(["파라미터", "기존값", "최적값", "변화"])
+        self.bt_opt_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.bt_opt_table.setAlternatingRowColors(True)
+        self.bt_opt_table.verticalHeader().setVisible(False)
+        self.bt_opt_table.setMaximumHeight(180)
+        ol.addWidget(self.bt_opt_table)
+
+        # 적용/복원 버튼
+        opt_btn_row = QHBoxLayout()
+        self.btn_apply_opt = QPushButton("✅ 최적값 적용")
+        self.btn_apply_opt.setStyleSheet(f"background:{C_GREEN}; color:black; padding:8px 16px; border-radius:4px;")
+        self.btn_apply_opt.clicked.connect(self._apply_optimizer)
+        self.btn_apply_opt.setEnabled(False)
+        self.btn_restore_opt = QPushButton("↩ 원래값 복원")
+        self.btn_restore_opt.clicked.connect(self._restore_optimizer)
+        self.btn_restore_opt.setEnabled(False)
+        opt_btn_row.addWidget(self.btn_apply_opt)
+        opt_btn_row.addWidget(self.btn_restore_opt)
+        opt_btn_row.addStretch()
+        ol.addLayout(opt_btn_row)
+
         warn = QLabel("※ 위 수치는 경보선(재테스트 후보)이며 자동 변경 규칙이 아닙니다.")
-        warn.setStyleSheet(f"color:{C_YELLOW}; font-size:11pt; padding:8px;")
-        rl.addWidget(warn)
+        warn.setStyleSheet(f"color:{C_YELLOW}; font-size:11pt; padding:4px;")
+        ol.addWidget(warn)
+        rl.addWidget(gb_opt)
 
         self.bt_result_area.setVisible(False)
         lay.addWidget(self.bt_result_area)
@@ -803,30 +830,89 @@ class Dashboard(QMainWindow):
             self.bt_opt_status.setText("먼저 백테스트를 실행하세요")
             return
         from fang_v10.dashboard_tabs import OptimizerThread
+        # BacktestThread가 수집한 df 재사용 — 없으면 None
+        df = getattr(self._bt_thread, '_last_df', None) if self._bt_thread else None
         self._opt_thread = OptimizerThread(
-            None, self.bt_sym.currentText(), self.bt_bal.value())
-        self._opt_thread.progress.connect(
-            lambda p, m: self.bt_opt_status.setText(f"{p}% {m}"))
+            df, self.bt_sym.currentText(), self.bt_bal.value())
+        self._opt_thread.progress.connect(self._on_opt_progress)
         self._opt_thread.finished.connect(self._on_opt_finished)
         self._opt_thread.error.connect(lambda e: self.bt_opt_status.setText(f"오류: {e}"))
+        self.bt_opt_progress.setValue(0)
         self.bt_opt_status.setText("최적화 실행중...")
         self._opt_thread.start()
 
+    def _stop_optimizer(self) -> None:
+        if hasattr(self, '_opt_thread') and self._opt_thread and self._opt_thread.isRunning():
+            self._opt_thread.stop()
+            self.bt_opt_status.setText("중지됨")
+
+    def _on_opt_progress(self, pct: int, msg: str) -> None:
+        self.bt_opt_progress.setValue(pct)
+        self.bt_opt_status.setText(msg)
+
     def _on_opt_finished(self, result) -> None:
-        if not result:
-            self.bt_opt_status.setText("최적화 결과 없음")
+        self._opt_result = result
+        if not result or not result.get("best_params"):
+            self.bt_opt_status.setText("유효한 최적 조합 없음")
             return
-        changes = result.get("changes", [])
-        rejected = result.get("rejected", [])
-        lines = [f"<b>채택: {len(changes)}건, 기각: {len(rejected)}건</b><br>"]
-        for ch in changes:
-            lines.append(f'<span style="color:{C_GREEN}">✓ {ch["param"]}: '
-                         f'{ch["before"]} → {ch["after"]} (EV {ch["ev_diff"]:+.4f})</span><br>')
-        for rj in rejected:
-            lines.append(f'<span style="color:{C_RED}">✗ {rj["param"]}: '
-                         f'{rj.get("reject_reason", "")}</span><br>')
-        self.bt_opt_result.setText("".join(lines))
-        self.bt_opt_status.setText("완료")
+
+        best = result["best_params"]
+        # 현재값 가져오기
+        current_vals = {}
+        for k in best:
+            if k.startswith("SL_ATR_MULT_"):
+                asset = k.split("_")[-1]
+                current_vals[k] = CONFIG.SL_ATR_MULT.get(asset, 0)
+            else:
+                current_vals[k] = getattr(CONFIG, k, 0)
+
+        # 테이블 채우기
+        self.bt_opt_table.setRowCount(0)
+        for param, new_val in best.items():
+            row = self.bt_opt_table.rowCount()
+            self.bt_opt_table.insertRow(row)
+            old_val = current_vals.get(param, "?")
+            diff = ""
+            if isinstance(new_val, (int, float)) and isinstance(old_val, (int, float)):
+                d = new_val - old_val
+                diff = f"{d:+.2f}"
+            self.bt_opt_table.setItem(row, 0, _make_item(param))
+            self.bt_opt_table.setItem(row, 1, _make_item(f"{old_val}"))
+            self.bt_opt_table.setItem(row, 2, _make_item(f"{new_val}",
+                                      fg=QColor(C_GREEN)))
+            self.bt_opt_table.setItem(row, 3, _make_item(diff,
+                                      fg=_pnl_color(float(diff)) if diff else QColor(C_TEXT)))
+
+        # 요약
+        self.bt_opt_status.setText(
+            f"완료: PF={result['best_pf']:.2f} EV={result['best_ev']:+.3f}R "
+            f"MDD={result['best_mdd']*100:.1f}%"
+        )
+        self.btn_apply_opt.setEnabled(True)
+        self.btn_restore_opt.setEnabled(True)
+        # 원래값 저장
+        self._opt_originals = current_vals
+
+    def _apply_optimizer(self) -> None:
+        if not hasattr(self, '_opt_result') or not self._opt_result:
+            return
+        from fang_v10.optimizer import AutoOptimizer
+        opt = AutoOptimizer()
+        opt.apply_best(self._opt_result)
+        self.bt_opt_status.setText("✅ 최적값 적용 완료!")
+        QMessageBox.information(self, "적용", "최적 파라미터가 적용되었습니다.")
+
+    def _restore_optimizer(self) -> None:
+        if not hasattr(self, '_opt_originals'):
+            return
+        for k, v in self._opt_originals.items():
+            if k.startswith("SL_ATR_MULT_"):
+                asset = k.split("_")[-1]
+                CONFIG.SL_ATR_MULT[asset] = v
+            else:
+                setattr(CONFIG, k, v)
+        self.bt_opt_status.setText("↩ 원래값 복원 완료")
+        QMessageBox.information(self, "복원", "원래 파라미터로 복원되었습니다.")
 
     # ──────────── 탭 5: 설정 ────────────
     def _build_tab5(self) -> QWidget:

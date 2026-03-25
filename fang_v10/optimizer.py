@@ -1,15 +1,15 @@
 """
-경보선 기반 자동 파라미터 최적화 엔진.
+2단계 그리드 탐색 기반 파라미터 최적화 엔진.
 
-Optuna 같은 블랙박스 탐색이 아니라,
-측정된 문제에 대해 미리 정의된 처방을 A/B 비교하는 방식.
+1단계: SL_BTC × SL_ETH × TP1_R (48조합)
+2단계: 상위5개 × TP1_RATIO × BE_TRIGGER_R (15조합)
+선택: EV>0 AND MDD<5% AND 거래수>=20 중 PF 최고.
 """
 from __future__ import annotations
 
-import copy
 import json
 import logging
-from dataclasses import asdict
+from itertools import product
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -17,192 +17,151 @@ from fang_v10.config import CONFIG
 
 logger = logging.getLogger(__name__)
 
+# ── 탐색 공간 ──
+SEARCH_SPACE = {
+    "SL_ATR_MULT_BTC": [1.2, 1.5, 1.8, 2.1],
+    "SL_ATR_MULT_ETH": [1.5, 1.8, 2.1, 2.4],
+    "TP1_R": [0.8, 1.0, 1.2],
+    "TP1_RATIO": [0.30, 0.40, 0.50],
+    "BE_TRIGGER_R": [0.5, 0.8, 1.0],
+}
+
 
 class AutoOptimizer:
-    """경보선 기반 자동 파라미터 최적화."""
+    """2단계 그리드 탐색 최적화."""
 
     def __init__(
         self,
-        backtest_engine: Any,
-        df: Any,
-        symbol: str,
+        backtest_engine: Any = None,
+        df: Any = None,
+        symbol: str = "",
         initial_balance: float = 198.0,
     ) -> None:
         self.engine = backtest_engine
         self.df = df
         self.symbol = symbol
         self.balance = initial_balance
-        self._baseline = None
         self._result: Dict[str, Any] = {}
 
-    # ════════════════════════════════════════
-    # 메인 최적화 루프
-    # ════════════════════════════════════════
-
     def run_optimization(
-        self, progress_callback: Optional[Callable[[int, str], None]] = None,
+        self,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
     ) -> Dict[str, Any]:
-        """
-        1) baseline 백테스트
-        2) 경보선 체크 → 후보 생성
-        3) 각 후보 개별 백테스트 → EV 비교
-        4) EV 개선된 변경만 채택
-        """
+        """2단계 그리드 탐색 실행."""
         cb = progress_callback or (lambda p, m: None)
 
-        # 1단계: baseline
-        cb(5, "Baseline 백테스트 실행 중...")
-        self._baseline = self.engine.run(self.df, self.symbol, self.balance)
-        baseline_ev = self._baseline.avg_r
-        cb(20, f"Baseline 완료: EV={baseline_ev:+.3f}R")
+        if self.engine is None:
+            from fang_v10.backtest import BacktestEngine
+            self.engine = BacktestEngine(seed=42)
 
-        # 2단계: 경보선 체크
-        cb(25, "경보선 분석 중...")
-        candidates = self._check_alerts(self._baseline)
-        if not candidates:
-            cb(100, "경보선 미해당 — 현재 설정 유지")
-            return {
-                "baseline": self._baseline,
-                "optimized": self._baseline,
-                "changes": [],
-                "final_config": {},
-                "rejected": [],
-            }
+        # ══ 1단계: SL_BTC × SL_ETH × TP1_R ══
+        stage1_combos = list(product(
+            SEARCH_SPACE["SL_ATR_MULT_BTC"],
+            SEARCH_SPACE["SL_ATR_MULT_ETH"],
+            SEARCH_SPACE["TP1_R"],
+        ))
+        total_s1 = len(stage1_combos)
+        cb(2, f"1단계: {total_s1}조합 탐색 시작...")
 
-        cb(30, f"후보 {len(candidates)}개 발견, A/B 테스트 시작...")
+        stage1_results: List[Dict] = []
+        for idx, (sl_btc, sl_eth, tp1_r) in enumerate(stage1_combos):
+            pct = 5 + int(idx / total_s1 * 50)
+            cb(pct, f"1단계 {idx+1}/{total_s1}: SL_BTC={sl_btc} SL_ETH={sl_eth} TP1_R={tp1_r}")
 
-        # 3단계: 각 후보 개별 테스트
-        accepted: List[Dict] = []
-        rejected: List[Dict] = []
-        step = 60 // max(len(candidates), 1)
+            params = {"SL_ATR_MULT_BTC": sl_btc, "SL_ATR_MULT_ETH": sl_eth, "TP1_R": tp1_r}
+            result = self._run_with_overrides(params)
+            if result is None:
+                continue
 
-        for i, cand in enumerate(candidates):
-            pct = 30 + (i + 1) * step
-            param = cand["param"]
-            cb(pct, f"테스트 중: {param} = {cand['candidate']}")
+            stage1_results.append({
+                "params": params,
+                "ev": result.avg_r,
+                "pf": result.profit_factor,
+                "mdd": result.max_drawdown,
+                "winrate": result.winrate,
+                "trades": result.total_trades,
+                "result": result,
+            })
 
-            try:
-                test_result = self._run_with_override(param, cand["candidate"])
-                ev_diff = test_result.avg_r - baseline_ev
+        # 필터 + 정렬
+        valid = [r for r in stage1_results
+                 if r["ev"] > 0 and r["mdd"] < 0.05 and r["trades"] >= 20]
+        if not valid:
+            valid = sorted(stage1_results, key=lambda x: x["pf"], reverse=True)
+        else:
+            valid.sort(key=lambda x: x["pf"], reverse=True)
 
-                cand["ev_diff"] = round(ev_diff, 4)
-                cand["test_ev"] = round(test_result.avg_r, 4)
+        top5 = valid[:5]
+        cb(55, f"1단계 완료: 유효 {len(valid)}개, 상위 5개 선택")
 
-                if ev_diff > 0:
-                    cand["before"] = cand["current"]
-                    cand["after"] = cand["candidate"]
-                    accepted.append(cand)
-                    logger.info(
-                        "ACCEPT %s: %s→%s (EV %+.4f)",
-                        param, cand["current"], cand["candidate"], ev_diff,
-                    )
-                else:
-                    cand["reject_reason"] = f"EV 악화 ({ev_diff:+.4f})"
-                    rejected.append(cand)
-                    logger.info(
-                        "REJECT %s: EV %+.4f", param, ev_diff,
-                    )
-            except Exception as e:
-                cand["reject_reason"] = f"오류: {e}"
-                rejected.append(cand)
-                logger.error("후보 테스트 실패 %s: %s", param, e)
+        # ══ 2단계: 상위5 × TP1_RATIO × BE_TRIGGER_R ══
+        stage2_combos = list(product(
+            range(len(top5)),
+            SEARCH_SPACE["TP1_RATIO"],
+            SEARCH_SPACE["BE_TRIGGER_R"],
+        ))
+        total_s2 = len(stage2_combos)
+        cb(57, f"2단계: {total_s2}조합 탐색 시작...")
 
-        # 4단계: 채택된 변경 모두 적용 후 최종 백테스트
-        final_config: Dict[str, Any] = {}
-        for ch in accepted:
-            final_config[ch["param"]] = ch["after"]
+        all_results: List[Dict] = []
+        for idx, (top_idx, tp1_ratio, be_r) in enumerate(stage2_combos):
+            pct = 58 + int(idx / total_s2 * 35)
+            cb(pct, f"2단계 {idx+1}/{total_s2}")
 
-        optimized = self._baseline
-        if accepted:
-            cb(90, "최종 조합 백테스트...")
-            try:
-                optimized = self._run_with_overrides(final_config)
-            except Exception:
-                optimized = self._baseline
+            base_params = dict(top5[top_idx]["params"])
+            base_params["TP1_RATIO"] = tp1_ratio
+            base_params["BE_TRIGGER_R"] = be_r
 
-        cb(100, f"완료: {len(accepted)}개 개선, {len(rejected)}개 기각")
+            result = self._run_with_overrides(base_params)
+            if result is None:
+                continue
+
+            all_results.append({
+                "params": base_params,
+                "ev": result.avg_r,
+                "pf": result.profit_factor,
+                "mdd": result.max_drawdown,
+                "winrate": result.winrate,
+                "trades": result.total_trades,
+                "result": result,
+            })
+
+        # 최종 선택: EV>0 AND MDD<5% AND 거래수>=20 중 PF 최고
+        final_valid = [r for r in all_results
+                       if r["ev"] > 0 and r["mdd"] < 0.05 and r["trades"] >= 20]
+        if not final_valid:
+            final_valid = sorted(all_results, key=lambda x: x["pf"], reverse=True)
+        else:
+            final_valid.sort(key=lambda x: x["pf"], reverse=True)
+
+        best = final_valid[0] if final_valid else None
+
+        cb(95, "최종 결과 정리중...")
+
+        # baseline (현재 설정)
+        baseline = self._run_with_overrides({})
 
         self._result = {
-            "baseline": self._baseline,
-            "optimized": optimized,
-            "changes": accepted,
-            "final_config": final_config,
-            "rejected": rejected,
+            "best_params": best["params"] if best else {},
+            "best_ev": best["ev"] if best else 0,
+            "best_pf": best["pf"] if best else 0,
+            "best_winrate": best["winrate"] if best else 0,
+            "best_mdd": best["mdd"] if best else 0,
+            "best_result": best["result"] if best else None,
+            "baseline_result": baseline,
+            "all_results": all_results,
+            "stage1_count": len(stage1_results),
+            "stage2_count": len(all_results),
         }
+
+        cb(100, f"완료: 최적 PF={best['pf']:.2f} EV={best['ev']:+.3f}" if best else "완료: 유효 조합 없음")
         return self._result
-
-    # ════════════════════════════════════════
-    # 경보선 → 처방 매핑
-    # ════════════════════════════════════════
-
-    def _check_alerts(self, result: Any) -> List[Dict]:
-        candidates = []
-
-        # BE이탈률 > 40% → BE 0.5 → 0.8
-        if result.be_exit_rate > 0.40:
-            candidates.append({
-                "param": "BE_TRIGGER_R",
-                "current": CONFIG.BE_TRIGGER_R,
-                "candidate": 0.8,
-                "reason": f"BE이탈률 {result.be_exit_rate * 100:.1f}% > 40%",
-            })
-
-        # TP연장률 > 60% → TP1 비율 50% → 35%
-        if result.tp_extension_rate > 0.60:
-            candidates.append({
-                "param": "TP1_RATIO",
-                "current": CONFIG.TP1_RATIO,
-                "candidate": 0.35,
-                "reason": f"TP연장률 {result.tp_extension_rate * 100:.1f}% > 60%",
-            })
-
-        # SL 선점률 > 40% → SL배수 +0.3
-        phantom = result.sl_phantom_stats or {}
-        if phantom.get("premature_pct", 0) > 40:
-            asset = "BTC" if "BTC" in self.symbol else "ETH"
-            current = CONFIG.SL_ATR_MULT.get(asset, 1.5)
-            candidates.append({
-                "param": f"SL_ATR_MULT_{asset}",
-                "current": current,
-                "candidate": round(current + 0.3, 1),
-                "reason": f"SL선점률 {phantom['premature_pct']:.1f}% > 40%",
-            })
-
-        # 차단 정확도 < 30% → 쿨다운 완화
-        blocked = result.blocked_signal_stats or {}
-        if blocked.get("total", 0) > 10 and blocked.get("correct_block_pct", 100) < 30:
-            candidates.append({
-                "param": "COOLDOWN_AFTER_SL_SEC",
-                "current": CONFIG.COOLDOWN_AFTER_SL_SEC,
-                "candidate": 180,
-                "reason": f"차단정확도 {blocked['correct_block_pct']:.1f}% < 30%",
-            })
-
-        # BOX 거래 < 10건 (volume 완화 — CONFIG에 없으면 스킵)
-        box_trades = (result.regime_stats or {}).get("BOX", {}).get("trades", 0)
-        if box_trades < 10 and hasattr(CONFIG, "BOX_VOLUME_MIN"):
-            candidates.append({
-                "param": "BOX_VOLUME_MIN",
-                "current": getattr(CONFIG, "BOX_VOLUME_MIN", 1.2),
-                "candidate": 1.0,
-                "reason": f"BOX 거래 {box_trades}건 < 10",
-            })
-
-        return candidates
-
-    # ════════════════════════════════════════
-    # 파라미터 오버라이드 백테스트
-    # ════════════════════════════════════════
-
-    def _run_with_override(self, param: str, value: Any) -> Any:
-        return self._run_with_overrides({param: value})
 
     def _run_with_overrides(self, overrides: Dict[str, Any]) -> Any:
         """파라미터 임시 변경 → 백테스트 → 원복."""
         originals: Dict[str, Any] = {}
 
         for param, value in overrides.items():
-            # SL_ATR_MULT_BTC / SL_ATR_MULT_ETH 특별 처리
             if param.startswith("SL_ATR_MULT_"):
                 asset = param.split("_")[-1]
                 originals[param] = CONFIG.SL_ATR_MULT.get(asset)
@@ -212,12 +171,13 @@ class AutoOptimizer:
                 setattr(CONFIG, param, value)
 
         try:
-            # 새 엔진 인스턴스 (RiskEngine 상태 격리)
             from fang_v10.backtest import BacktestEngine
             engine = BacktestEngine(seed=42)
             result = engine.run(self.df, self.symbol, self.balance)
+        except Exception as e:
+            logger.error("백테스트 실패: %s (params=%s)", e, overrides)
+            result = None
         finally:
-            # 원복
             for param, orig in originals.items():
                 if param.startswith("SL_ATR_MULT_"):
                     asset = param.split("_")[-1]
@@ -228,15 +188,15 @@ class AutoOptimizer:
 
         return result
 
-    # ════════════════════════════════════════
-    # 결과 적용 / 요약
-    # ════════════════════════════════════════
+    def apply_best(self, result: Optional[Dict[str, Any]] = None) -> None:
+        """최적 파라미터를 CONFIG + user_config.json에 저장."""
+        res = result or self._result
+        best_params = res.get("best_params", {})
+        if not best_params:
+            logger.warning("적용할 최적 파라미터 없음")
+            return
 
-    def apply_to_config(self, final_config: Dict[str, Any]) -> None:
-        """최적화 결과를 user_config.json에 저장 + CONFIG hot reload."""
         config_path = Path(CONFIG.DATA_DIR) / "user_config.json"
-
-        # 기존 로드
         existing: Dict = {}
         if config_path.exists():
             try:
@@ -244,56 +204,35 @@ class AutoOptimizer:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # SL_ATR_MULT 특별 처리: dict merge
-        for key, val in final_config.items():
+        for key, val in best_params.items():
             if key.startswith("SL_ATR_MULT_"):
                 asset = key.split("_")[-1]
                 sl_dict = existing.get("SL_ATR_MULT", dict(CONFIG.SL_ATR_MULT))
                 sl_dict[asset] = val
                 existing["SL_ATR_MULT"] = sl_dict
+                CONFIG.SL_ATR_MULT[asset] = val
             else:
                 existing[key] = val
+                setattr(CONFIG, key, val)
 
         config_path.write_text(
             json.dumps(existing, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
         CONFIG.sync_from_json()
-        logger.info("최적화 결과 저장: %s", final_config)
+        logger.info("최적 파라미터 적용: %s", best_params)
 
     def get_summary(self) -> str:
         """사람이 읽을 수 있는 최적화 요약."""
         if not self._result:
             return "최적화 미실행"
-
-        bl = self._result["baseline"]
-        opt = self._result["optimized"]
-        changes = self._result["changes"]
-        rejected = self._result["rejected"]
-
-        lines = [
-            f"[Baseline] 거래 {bl.total_trades}건, 승률 {bl.winrate*100:.1f}%, "
-            f"EV {bl.avg_r:+.3f}R, PF {bl.profit_factor:.2f}",
-            f"[Optimized] 거래 {opt.total_trades}건, 승률 {opt.winrate*100:.1f}%, "
-            f"EV {opt.avg_r:+.3f}R, PF {opt.profit_factor:.2f}",
-            "",
-        ]
-
-        if changes:
-            lines.append(f"채택 ({len(changes)}건):")
-            for ch in changes:
-                lines.append(
-                    f"  {ch['param']}: {ch['before']} → {ch['after']} "
-                    f"(EV {ch['ev_diff']:+.4f}) [{ch['reason']}]"
-                )
-        else:
-            lines.append("채택: 없음 (현재 설정 최적)")
-
-        if rejected:
-            lines.append(f"기각 ({len(rejected)}건):")
-            for rj in rejected:
-                lines.append(
-                    f"  {rj['param']}: {rj.get('reject_reason', '?')} [{rj['reason']}]"
-                )
-
-        return "\n".join(lines)
+        r = self._result
+        bp = r.get("best_params", {})
+        if not bp:
+            return "유효한 최적 조합 없음"
+        return (
+            f"1단계 {r['stage1_count']}조합 → 2단계 {r['stage2_count']}조합\n"
+            f"최적: PF={r['best_pf']:.2f}, EV={r['best_ev']:+.3f}R, "
+            f"승률={r['best_winrate']*100:.1f}%, MDD={r['best_mdd']*100:.1f}%\n"
+            f"파라미터: {bp}"
+        )
