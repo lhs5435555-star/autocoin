@@ -311,7 +311,7 @@ class TestDCA:
 
 class TestPositionManager:
     def test_calc_r_uses_initial_r(self):
-        """calc_r은 initial_r_distance 사용."""
+        """calc_risk_r은 initial_r_distance 사용."""
         pos = PositionState(
             symbol="BTC/USDT:USDT", side="long",
             entries=[(60000, 0.01)],
@@ -319,9 +319,9 @@ class TestPositionManager:
             initial_r_distance=450.0,
         )
         # 450 USDT 상승 = +1R
-        assert abs(pos.calc_r(60450) - 1.0) < 0.01
+        assert abs(pos.calc_risk_r(60450) - 1.0) < 0.01
         # 450 USDT 하락 = -1R
-        assert abs(pos.calc_r(59550) - (-1.0)) < 0.01
+        assert abs(pos.calc_risk_r(59550) - (-1.0)) < 0.01
 
     def test_favorable_extreme_long(self):
         """롱이면 max 추적."""

@@ -115,7 +115,7 @@ async def main_loop() -> None:
                                     pos.side, pos.avg_price, price,
                                     pos.total_size, asset,
                                 )["net_pnl"] if CONFIG.PAPER_TRADING else 0
-                                r_val = pos.calc_r(price)
+                                r_val = pos.calc_risk_r(price)
                                 risk_eng.record_trade(pnl, symbol)
                                 executor.record_trade_result(symbol, pos.side, reason.lower())
                                 balance += pnl

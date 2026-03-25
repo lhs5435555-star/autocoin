@@ -200,8 +200,8 @@ class BacktestEngine:
                 sl_hit = False
                 tp_hit = False
 
-                current_r_low = pos.calc_r(bar_low)
-                current_r_high = pos.calc_r(bar_high)
+                current_r_low = pos.calc_risk_r(bar_low)
+                current_r_high = pos.calc_risk_r(bar_high)
 
                 if pos.side == "long":
                     if current_r_low <= -1.0:
@@ -254,7 +254,7 @@ class BacktestEngine:
                         else:
                             pnl = (pos.avg_price - exit_fill) * pos.total_size - fee
 
-                        r_val = pos.calc_r(exit_fill)
+                        r_val = pos.calc_risk_r(exit_fill)
                         all_r_results.append(r_val)
 
                         if pnl >= 0:

@@ -129,36 +129,44 @@ class BitgetClient:
         if client_order_id:
             primary_params["clientOid"] = client_order_id
 
-        try:
-            self._rate_limit()
-            result = self.exchange.create_order(
-                symbol=symbol, type="market", side=close_side,
-                amount=formatted_amount, params=primary_params,
-            )
-            logger.info("SL 설정 성공 (triggerPrice): %s %s @ %s", symbol, close_side, formatted_price)
-            return result
-        except Exception as e1:
-            logger.warning("SL triggerPrice 실패, stopLossPrice로 재시도: %s", e1)
+        # 시도 순서: triggerPrice+cid → triggerPrice-cid → stopLoss+cid → stopLoss-cid
+        attempts = [
+            ("triggerPrice", primary_params),
+        ]
 
-        # 2차 시도: stopLossPrice
+        # clientOrderId 거부 시 fallback: cid 없이 재시도
+        if client_order_id:
+            no_cid_primary = {k: v for k, v in primary_params.items() if k != "clientOid"}
+            attempts.append(("triggerPrice(no-cid)", no_cid_primary))
+
         fallback_params: Dict[str, Any] = {
             "stopLossPrice": formatted_price,
             "reduceOnly": True,
         }
         if client_order_id:
             fallback_params["clientOid"] = client_order_id
+            attempts.append(("stopLossPrice", fallback_params))
+            no_cid_fallback = {k: v for k, v in fallback_params.items() if k != "clientOid"}
+            attempts.append(("stopLossPrice(no-cid)", no_cid_fallback))
+        else:
+            attempts.append(("stopLossPrice", fallback_params))
 
-        try:
-            self._rate_limit()
-            result = self.exchange.create_order(
-                symbol=symbol, type="market", side=close_side,
-                amount=formatted_amount, params=fallback_params,
-            )
-            logger.info("SL 설정 성공 (stopLossPrice): %s %s @ %s", symbol, close_side, formatted_price)
-            return result
-        except Exception as e2:
-            logger.error("SL 설정 완전 실패 %s: %s", symbol, e2)
-            raise
+        last_err = None
+        for label, params in attempts:
+            try:
+                self._rate_limit()
+                result = self.exchange.create_order(
+                    symbol=symbol, type="market", side=close_side,
+                    amount=formatted_amount, params=params,
+                )
+                logger.info("SL 설정 성공 (%s): %s %s @ %s", label, symbol, close_side, formatted_price)
+                return result
+            except Exception as e:
+                logger.warning("SL %s 실패: %s", label, e)
+                last_err = e
+
+        logger.error("SL 설정 완전 실패 %s: %s", symbol, last_err)
+        raise last_err or RuntimeError(f"SL 설정 실패: {symbol}")
 
     def cancel_trigger_orders(self, symbol: str) -> None:
         """심볼의 모든 트리거 주문 취소."""

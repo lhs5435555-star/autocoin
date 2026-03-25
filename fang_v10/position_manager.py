@@ -41,8 +41,8 @@ class PositionState:
 
     initial_r_distance: float = 0.0     # 1R 가격 거리 (불변)
 
-    peak_r: float = 0.0                 # calc_r() 최대값
-    trough_r: float = 0.0              # calc_r() 최소값
+    peak_r: float = 0.0                 # calc_risk_r() 최대값
+    trough_r: float = 0.0              # calc_risk_r() 최소값
 
     favorable_extreme: float = 0.0      # Long: 최고가, Short: 최저가
 
@@ -63,8 +63,8 @@ class PositionState:
         self.total_size = sum(s for _, s in self.entries)
         self.avg_price = total_cost / self.total_size if self.total_size > 0 else price
 
-    def calc_r(self, current_price: float) -> float:
-        """현재 가격 기준 R 배수 계산.
+    def calc_risk_r(self, current_price: float) -> float:
+        """리스크 한도 판단용 R (initial_r_distance 기준, 불변).
 
         R 계산 기준:
         - 분모 (initial_r_distance): 최초 진입 시 ATR × SL_ATR_MULT. DCA 후 불변.
@@ -86,9 +86,23 @@ class PositionState:
             return (current_price - self.avg_price) / self.initial_r_distance
         return (self.avg_price - current_price) / self.initial_r_distance
 
+    def calc_exit_r(self, current_price: float) -> float:
+        """체결 판단용 R (동일 계산이지만 의미가 다름을 명시).
+
+        현재는 calc_risk_r과 동일한 계산.
+        향후 DCA 후 exit 기준을 분리할 경우 여기만 수정.
+
+        기준:
+          - 분모: initial_r_distance (고정, DCA로 안 바뀜)
+          - 분자: avg_price 기준 (DCA로 바뀜)
+          - 즉, DCA 성공 시 같은 가격에서 R값이 커짐 → TP 도달 쉬워짐
+          - 이것은 의도된 동작
+        """
+        return self.calc_risk_r(current_price)
+
     def update_peaks(self, current_price: float) -> None:
         """R 피크/트로프 및 favorable_extreme 갱신."""
-        current_r = self.calc_r(current_price)
+        current_r = self.calc_risk_r(current_price)
         self.peak_r = max(self.peak_r, current_r)
         self.trough_r = min(self.trough_r, current_r)
 
@@ -418,7 +432,7 @@ class PositionManager:
         if pos is None:
             return None
 
-        current_r = pos.calc_r(current_price)
+        current_r = pos.calc_risk_r(current_price)
         pos.update_peaks(current_price)
         hold_bars = bar_idx - pos.entry_bar
 
