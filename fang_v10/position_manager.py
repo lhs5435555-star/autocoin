@@ -66,7 +66,19 @@ class PositionState:
     def calc_r(self, current_price: float) -> float:
         """현재 가격 기준 R 배수 계산.
 
-        initial_r_distance 기준 (DCA 후에도 불변).
+        R 계산 기준:
+        - 분모 (initial_r_distance): 최초 진입 시 ATR × SL_ATR_MULT. DCA 후 불변.
+        - 분자 (가격 차이): avg_price 기준. DCA 후 avg_price가 바뀜.
+
+        설계 의도:
+        - "총 리스크를 초기 1R 기준으로 묶는다"
+        - DCA로 avg_price가 유리해지면 같은 가격 이동에서 R값이 달라짐
+        - 이는 의도된 동작: DCA 성공 시 TP 도달이 쉬워짐
+
+        주의:
+        - risk_r_basis (리스크 한도 판단) = initial_r_distance 고정
+        - price_exit_basis (체결가 비교) = avg_price 변동
+        - 이 두 기준이 분리되어 있음을 인지해야 함
         """
         if self.initial_r_distance <= 0:
             return 0.0

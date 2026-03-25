@@ -71,9 +71,16 @@ class SafeExecutor:
     # ──────────────────────────────────────────
 
     def _verify_sl_registered(
-        self, symbol: str, side: str, expected_trigger: float, max_retries: int = 3,
+        self, symbol: str, side: str, expected_trigger: float,
+        max_retries: int = 3,
+        client_order_id: Optional[str] = None,
+        expected_amount: Optional[float] = None,
     ) -> bool:
-        """SL 등록 확인. 3회 재시도 + 정밀 매칭."""
+        """SL 등록 확인. 3회 재시도 + 정밀 매칭.
+
+        우선 clientOrderId + trigger price + 수량으로 검증.
+        clientOrderId 미지원 시 기존 로직(trigger+side+reduceOnly)으로 fallback.
+        """
         close_side = "sell" if side == "long" else "buy"
 
         for attempt in range(max_retries):
@@ -86,10 +93,23 @@ class SafeExecutor:
                         or o.get("stopPrice")
                         or 0
                     )
-                    if (trigger > 0
-                            and o.get("side", "") == close_side
-                            and (o.get("reduceOnly", False) or o.get("reduce_only", False))
-                            and abs(trigger - expected_trigger) / expected_trigger < 0.01):
+                    if trigger <= 0:
+                        continue
+                    if abs(trigger - expected_trigger) / expected_trigger >= 0.01:
+                        continue
+
+                    # 1차: clientOrderId + 수량 매칭
+                    if client_order_id and expected_amount:
+                        order_cid = o.get("clientOrderId") or o.get("clientOid") or ""
+                        order_amt = float(o.get("amount", 0) or o.get("contracts", 0) or 0)
+                        if (order_cid == client_order_id
+                                and order_amt > 0
+                                and abs(order_amt - expected_amount) / expected_amount < 0.05):
+                            return True
+
+                    # 2차 fallback: side + reduceOnly
+                    if (o.get("side", "") == close_side
+                            and (o.get("reduceOnly", False) or o.get("reduce_only", False))):
                         return True
             except Exception as e:
                 logger.warning("SL 확인 %d/%d 실패: %s", attempt + 1, max_retries, e)
@@ -163,34 +183,49 @@ class SafeExecutor:
 
         fill_price = float(order.get("average", 0) or sizing.entry_price)
 
-        # 9. SL 설정
+        # 9. SL 설정 (clientOrderId 생성)
         sl_price = sizing.sl_price
         sl_formatted = self.client.format_price(symbol, sl_price)
+        sl_client_order_id = f"sl_{symbol.replace('/', '_')}_{int(time.time())}"
         try:
-            self.client.set_trigger_sl(symbol, side, sl_formatted, amount)
+            self.client.set_trigger_sl(
+                symbol, side, sl_formatted, amount,
+                client_order_id=sl_client_order_id,
+            )
         except Exception as e:
             logger.critical("SL 설정 실패, 포지션 청산: %s — %s", symbol, e)
             self.safe_close(symbol, side, "SL 설정 실패")
             return None
 
-        # 10. SL 등록 확인
-        if not self._verify_sl_registered(symbol, side, sl_formatted):
+        # 10. SL 등록 확인 (clientOrderId + 수량 매칭)
+        if not self._verify_sl_registered(
+            symbol, side, sl_formatted,
+            client_order_id=sl_client_order_id,
+            expected_amount=amount,
+        ):
             logger.critical("SL 미등록 3회 실패, 포지션 청산: %s", symbol)
             self.safe_close(symbol, side, "SL 미등록")
             return None
 
-        # 1초 후 포지션 크기 검증
+        # 11. 1초 후 포지션 크기 검증
         time.sleep(1)
         pos = self.client.get_position(symbol)
+
+        # 12. 실제 청산가 검증
         if pos:
-            actual_liq = float(pos.get("liquidationPrice", 0) or 0)
-            if actual_liq > 0:
-                actual_liq_dist = abs(fill_price - actual_liq) / fill_price
-                sl_dist = sizing.sl_distance_pct
+            actual_liq = pos.get("liquidationPrice", 0)
+            if actual_liq and float(actual_liq) > 0:
+                actual_liq = float(actual_liq)
+                entry_price = fill_price
+                actual_liq_dist = abs(entry_price - actual_liq) / entry_price
+                sl_dist = abs(entry_price - sl_price) / entry_price
                 if actual_liq_dist > 0 and sl_dist / actual_liq_dist > 0.70:
                     logger.critical(
-                        "실제 청산가 기준 SL 위험: sl_dist/liq_dist=%.2f",
+                        "SL/청산비율 %.2f > 0.70 위험 "
+                        "(entry=%.2f, sl=%.2f, liq=%.2f, sl_dist=%.4f, liq_dist=%.4f)",
                         sl_dist / actual_liq_dist,
+                        entry_price, sl_price, actual_liq,
+                        sl_dist, actual_liq_dist,
                     )
 
         logger.info(

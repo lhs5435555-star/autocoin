@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import ccxt
 import pandas as pd
@@ -109,21 +109,25 @@ class BitgetClient:
 
     def set_trigger_sl(
         self, symbol: str, side: str, trigger_price: float, amount: float,
+        client_order_id: Optional[str] = None,
     ) -> Dict:
         """트리거 SL 설정 (mark price 기준).
 
         ccxt 버전 호환: triggerPrice 실패 시 stopLossPrice로 재시도.
+        client_order_id가 주어지면 주문에 포함 (SL 검증용).
         """
         close_side = "sell" if side == "long" else "buy"
         formatted_price = self.format_price(symbol, trigger_price)
         formatted_amount = self.format_amount(symbol, amount)
 
         # 1차 시도: triggerPrice
-        primary_params = {
+        primary_params: Dict[str, Any] = {
             "triggerPrice": formatted_price,
             "triggerType": "mark_price",
             "reduceOnly": True,
         }
+        if client_order_id:
+            primary_params["clientOid"] = client_order_id
 
         try:
             self._rate_limit()
@@ -137,10 +141,12 @@ class BitgetClient:
             logger.warning("SL triggerPrice 실패, stopLossPrice로 재시도: %s", e1)
 
         # 2차 시도: stopLossPrice
-        fallback_params = {
+        fallback_params: Dict[str, Any] = {
             "stopLossPrice": formatted_price,
             "reduceOnly": True,
         }
+        if client_order_id:
+            fallback_params["clientOid"] = client_order_id
 
         try:
             self._rate_limit()
