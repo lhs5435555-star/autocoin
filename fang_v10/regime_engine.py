@@ -174,9 +174,10 @@ class RegimeEngine:
         ema21 = row.get("ema21", 0)
         ema50 = row.get("ema50", 0)
 
-        ema_aligned = (ema9 > ema21 > ema50) or (ema9 < ema21 < ema50)
+        # EMA9-EMA21 정렬이면 TREND (EMA50 엄격 요구 제거)
+        ema_aligned = (ema9 > ema21) or (ema9 < ema21)
 
-        if adx_val >= 25 and ema_aligned:
+        if adx_val >= 20 and ema_aligned:
             # 교착 해소: ADX 25~30 + EMA 2/3만 정렬 → BOX
             # 여기서는 3/3 완전 정렬이므로 TREND
             return MarketRegime.TREND

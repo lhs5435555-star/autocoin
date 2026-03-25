@@ -103,30 +103,29 @@ def _check_trend(
 ) -> Optional[Signal]:
     """TREND 롱/숏 조건 확인.
 
-    롱 (전부 AND):
-      adx>=25, ema9>ema21>ema50, close>ema9,
-      50<rsi<75, volume_ratio>=1.3, (close-ema21)/atr<2.0
+    롱 (AND):
+      adx>=20, ema9>ema21, close>ema21,
+      40<rsi<80, volume_ratio>=0.8, (close-ema21)/atr<3.0
 
     숏: 대칭
     """
     adx = row.get("adx", 0)
     ema9 = row.get("ema9", 0)
     ema21 = row.get("ema21", 0)
-    ema50 = row.get("ema50", 0)
     close = row.get("close", 0)
     rsi = row.get("rsi", 50)
     volume_ratio = row.get("volume_ratio", 0)
     atr = row.get("atr", 0)
 
-    if adx < 25 or volume_ratio < 1.3 or atr <= 0:
+    if adx < 20 or volume_ratio < 0.8 or atr <= 0:
         return None
 
     # ── 롱 ──
-    if (ema9 > ema21 > ema50
-            and close > ema9
-            and 50 < rsi < 75):
+    if (ema9 > ema21
+            and close > ema21
+            and 40 < rsi < 80):
         ema_dist = (close - ema21) / atr if atr > 0 else 999
-        if ema_dist < 2.0:
+        if ema_dist < 3.0:
             entry = close
             sl, tp = _calc_sl_tp(entry, "long", atr, asset)
             strength = _trend_strength(adx, volume_ratio, rsi)
@@ -139,11 +138,11 @@ def _check_trend(
             )
 
     # ── 숏 (대칭) ──
-    if (ema9 < ema21 < ema50
-            and close < ema9
-            and 25 < rsi < 50):
+    if (ema9 < ema21
+            and close < ema21
+            and 20 < rsi < 60):
         ema_dist = (ema21 - close) / atr if atr > 0 else 999
-        if ema_dist < 2.0:
+        if ema_dist < 3.0:
             entry = close
             sl, tp = _calc_sl_tp(entry, "short", atr, asset)
             strength = _trend_strength(adx, volume_ratio, 100 - rsi)
@@ -160,9 +159,9 @@ def _check_trend(
 
 def _trend_strength(adx: float, volume_ratio: float, rsi_score: float) -> float:
     """TREND 신호 강도 0~1 계산."""
-    adx_s = min((adx - 25) / 25, 1.0) if adx >= 25 else 0
-    vr_s = min((volume_ratio - 1.3) / 1.7, 1.0) if volume_ratio >= 1.3 else 0
-    rsi_s = min((rsi_score - 50) / 25, 1.0) if rsi_score >= 50 else 0
+    adx_s = min((adx - 20) / 30, 1.0) if adx >= 20 else 0
+    vr_s = min((volume_ratio - 0.8) / 2.2, 1.0) if volume_ratio >= 0.8 else 0
+    rsi_s = min((rsi_score - 40) / 35, 1.0) if rsi_score >= 40 else 0
     return round(max(0.0, min(1.0, adx_s * 0.4 + vr_s * 0.3 + rsi_s * 0.3)), 3)
 
 
@@ -205,14 +204,14 @@ def _check_box(
     prev_rsi = prev.get("rsi", 50)
 
     # 공통 필터
-    if adx >= 25 or volume_ratio < 1.2 or bb_width <= 0.01 or atr <= 0:
+    if adx >= 30 or volume_ratio < 0.8 or bb_width <= 0.005 or atr <= 0:
         return None
 
     # ── 롱 (반등확인형) ──
     if (prev_close < bb_lower        # 이전봉이 BB하단 아래
             and close > bb_lower      # 현재봉이 밴드 안으로 복귀
             and rsi > prev_rsi        # RSI 상향 반전
-            and rsi <= 40):           # 아직 과매도 근처
+            and rsi <= 45):           # 아직 과매도 근처
         entry = close
         sl, tp = _calc_sl_tp(entry, "long", atr, asset)
         strength = _box_strength(rsi, volume_ratio, bb_width, "long")
@@ -228,7 +227,7 @@ def _check_box(
     if (prev_close > bb_upper        # 이전봉이 BB상단 위
             and close < bb_upper      # 현재봉이 밴드 안으로 복귀
             and rsi < prev_rsi        # RSI 하향 반전
-            and rsi >= 60):           # 아직 과매수 근처
+            and rsi >= 55):           # 아직 과매수 근처
         entry = close
         sl, tp = _calc_sl_tp(entry, "short", atr, asset)
         strength = _box_strength(rsi, volume_ratio, bb_width, "short")

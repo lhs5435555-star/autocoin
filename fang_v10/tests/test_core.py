@@ -97,9 +97,9 @@ class TestRegime:
         assert regime == MarketRegime.TREND
 
     def test_regime_box(self):
-        """ADX=20 → BOX."""
+        """ADX=15 → BOX."""
         eng = RegimeEngine()
-        df = _make_df(adx=20, ema_trend="flat")
+        df = _make_df(adx=15, ema_trend="flat")
         regime = eng.detect("BTC/USDT:USDT", df, len(df) - 1)
         assert regime == MarketRegime.BOX
 
