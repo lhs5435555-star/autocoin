@@ -75,7 +75,7 @@ def generate_signals(
         if sig:
             signals.append(sig)
     elif regime == MarketRegime.BOX:
-        sig = _check_box(symbol, asset, row, bar_idx)
+        sig = _check_box(symbol, asset, df, bar_idx)
         if sig:
             signals.append(sig)
 
@@ -159,18 +159,29 @@ def _trend_strength(adx: float, volume_ratio: float, rsi_score: float) -> float:
 # ──────────────────────────────────────────────
 
 def _check_box(
-    symbol: str, asset: str, row: pd.Series, bar_idx: int
+    symbol: str, asset: str, df: pd.DataFrame, bar_idx: int
 ) -> Optional[Signal]:
-    """BOX 롱/숏 조건 확인.
+    """BOX 반등확인형 롱/숏 조건 확인.
 
-    롱 (전부 AND):
-      rsi<=30, close<=bb_lower, volume_ratio>=1.2,
-      adx<25, bb_width>1%
+    롱 (7개 전부 AND):
+      prev_close < bb_lower, close > bb_lower (반등 확인),
+      rsi > prev_rsi (RSI 상향), rsi <= 40,
+      volume_ratio >= 1.2, adx < 25, bb_width > 1%
 
-    숏: 대칭
+    숏 (완전 대칭):
+      prev_close > bb_upper, close < bb_upper (반등 확인),
+      rsi < prev_rsi (RSI 하향), rsi >= 60,
+      volume_ratio >= 1.2, adx < 25, bb_width > 1%
     """
-    rsi = row.get("rsi", 50)
+    # 이전봉 필요
+    if bar_idx < 1:
+        return None
+
+    row = df.iloc[bar_idx]
+    prev = df.iloc[bar_idx - 1]
+
     close = row.get("close", 0)
+    rsi = row.get("rsi", 50)
     bb_lower = row.get("bb_lower", 0)
     bb_upper = row.get("bb_upper", 0)
     volume_ratio = row.get("volume_ratio", 0)
@@ -178,11 +189,18 @@ def _check_box(
     bb_width = row.get("bb_width", 0)
     atr = row.get("atr", 0)
 
+    prev_close = prev.get("close", 0)
+    prev_rsi = prev.get("rsi", 50)
+
+    # 공통 필터
     if adx >= 25 or volume_ratio < 1.2 or bb_width <= 0.01 or atr <= 0:
         return None
 
-    # ── 롱 ──
-    if rsi <= 30 and close <= bb_lower:
+    # ── 롱 (반등확인형) ──
+    if (prev_close < bb_lower        # 이전봉이 BB하단 아래
+            and close > bb_lower      # 현재봉이 밴드 안으로 복귀
+            and rsi > prev_rsi        # RSI 상향 반전
+            and rsi <= 40):           # 아직 과매도 근처
         entry = close
         sl, tp = _calc_sl_tp(entry, "long", atr, asset)
         strength = _box_strength(rsi, volume_ratio, bb_width, "long")
@@ -190,12 +208,15 @@ def _check_box(
             symbol=symbol, side="long", strategy="box",
             strength=strength, entry_price=entry,
             sl_price=sl, tp_price=tp,
-            reason=f"BOX LONG: RSI={rsi:.1f}, BBw={bb_width:.4f}, VR={volume_ratio:.2f}",
+            reason=f"BOX반등확인: prev<BB하단→복귀, RSI↑{rsi:.0f}, Vol={volume_ratio:.1f}x",
             regime=MarketRegime.BOX,
         )
 
-    # ── 숏 (대칭) ──
-    if rsi >= 70 and close >= bb_upper:
+    # ── 숏 (반등확인형, 완전 대칭) ──
+    if (prev_close > bb_upper        # 이전봉이 BB상단 위
+            and close < bb_upper      # 현재봉이 밴드 안으로 복귀
+            and rsi < prev_rsi        # RSI 하향 반전
+            and rsi >= 60):           # 아직 과매수 근처
         entry = close
         sl, tp = _calc_sl_tp(entry, "short", atr, asset)
         strength = _box_strength(rsi, volume_ratio, bb_width, "short")
@@ -203,7 +224,7 @@ def _check_box(
             symbol=symbol, side="short", strategy="box",
             strength=strength, entry_price=entry,
             sl_price=sl, tp_price=tp,
-            reason=f"BOX SHORT: RSI={rsi:.1f}, BBw={bb_width:.4f}, VR={volume_ratio:.2f}",
+            reason=f"BOX반등확인: prev>BB상단→복귀, RSI↓{rsi:.0f}, Vol={volume_ratio:.1f}x",
             regime=MarketRegime.BOX,
         )
 
@@ -213,11 +234,11 @@ def _check_box(
 def _box_strength(
     rsi: float, volume_ratio: float, bb_width: float, side: str
 ) -> float:
-    """BOX 신호 강도 0~1 계산."""
+    """BOX 반등확인형 신호 강도 0~1 계산."""
     if side == "long":
-        rsi_s = min((30 - rsi) / 15, 1.0) if rsi <= 30 else 0
+        rsi_s = min((40 - rsi) / 20, 1.0) if rsi <= 40 else 0
     else:
-        rsi_s = min((rsi - 70) / 15, 1.0) if rsi >= 70 else 0
+        rsi_s = min((rsi - 60) / 20, 1.0) if rsi >= 60 else 0
     vr_s = min((volume_ratio - 1.2) / 1.8, 1.0) if volume_ratio >= 1.2 else 0
     bb_s = min(bb_width / 0.05, 1.0)
     return round(max(0.0, min(1.0, rsi_s * 0.4 + vr_s * 0.3 + bb_s * 0.3)), 3)

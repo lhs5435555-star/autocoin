@@ -58,7 +58,7 @@ def calc_position_size(
         sl: 손절 가격 (USDT)
         tp: 익절 가격 (USDT)
         symbol: 심볼 (예: "BTC/USDT:USDT")
-        kelly_mult: 켈리 배수 (0.3~1.5 클램핑)
+        kelly_mult: 켈리 배수 (현재 무시, 항상 1.0 고정)
 
     Returns:
         SizingResult (valid=False이면 진입 금지)
@@ -77,10 +77,9 @@ def calc_position_size(
             valid=False, reject_reason=reason,
         )
 
-    # ── 켈리 클램핑 ──
-    kelly_clamped = max(0.3, min(1.5, kelly_mult))
-    if kelly_mult < 0.3:
-        return _reject(f"kelly_mult={kelly_mult:.2f} < 0.3 → 진입 금지")
+    # ★ Kelly는 레짐별 100회 이상 실측 후에만 활성화.
+    # 현재는 항상 1.0 고정. kelly_mult 파라미터는 시그니처에 유지하되 무시.
+    kelly_clamped = 1.0
 
     # ── SL/TP 거리 ──
     sl_dist = abs(entry - sl) / entry
