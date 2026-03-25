@@ -410,6 +410,11 @@ class BotThread(QThread):
 
                     # 상태 emit
                     risk_mode = risk_eng.get_risk_mode()
+                    regimes = {}
+                    for sym in CONFIG.SYMBOLS:
+                        regimes[sym] = regime_eng.detect(
+                            sym, df, len(df) - 1,
+                        ).value if df is not None and not df.empty else "—"
                     self.state_updated.emit({
                         "balance": balance,
                         "daily_pnl": getattr(risk_eng, "_daily_pnl", 0),
@@ -422,9 +427,11 @@ class BotThread(QThread):
                                 "regime": v.regime, "dca_count": v.dca_count,
                                 "tp_count": v.tp_count,
                                 "be_activated": v.be_activated,
+                                "strategy": v.strategy,
                             }
                             for k, v in pos_mgr.positions.items()
                         },
+                        "regimes": regimes,
                     })
 
                     time.sleep(CONFIG.MAIN_LOOP_SEC)

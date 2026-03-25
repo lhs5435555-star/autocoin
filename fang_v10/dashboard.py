@@ -189,6 +189,7 @@ class Dashboard(QMainWindow):
         # 하단 상태바
         bot = QHBoxLayout()
         self.lbl_regime = QLabel("BTC: — | ETH: —")
+        self.lbl_regime.setTextFormat(Qt.RichText)
         self.lbl_regime.setStyleSheet(f"color:{C_ACCENT}; font-size:12pt;")
         self.lbl_kill = QLabel("일간: — | 연속패: — | MDD: —")
         self.lbl_kill.setStyleSheet(f"color:#999; font-size:12pt;")
@@ -377,12 +378,22 @@ class Dashboard(QMainWindow):
                 for c, it in enumerate(items):
                     self.pos_table.setItem(r, c, it)
 
-        # 하단 상태바
-        regime_parts = []
-        for sym in CONFIG.SYMBOLS:
-            asset = "BTC" if "BTC" in sym else "ETH"
-            regime_parts.append(f"{asset}: —")
-        self.lbl_regime.setText("  |  ".join(regime_parts))
+        # 하단 상태바 — 봇 미실행 시 기본 정보 표시
+        bot_running = self.bot and self.bot.isRunning()
+        if not bot_running:
+            status_parts = []
+            if CONFIG.PAPER_TRADING:
+                status_parts.append("\U0001f4dd PAPER 모드")
+            if not CONFIG.API_KEY:
+                status_parts.append("\U0001f534 API 미설정")
+            if not status_parts:
+                status_parts.append("봇 미실행")
+            regime_parts = []
+            for sym in CONFIG.SYMBOLS:
+                asset = "BTC" if "BTC" in sym else "ETH"
+                regime_parts.append(f"{asset}: \u2014")
+            self.lbl_regime.setText(
+                "  |  ".join(regime_parts) + "    " + "  ".join(status_parts))
 
         daily_pct = (today_pnl / bal * 100) if bal else 0
         w_dd = mdd.get("weekly_dd", 0)
@@ -1123,10 +1134,92 @@ class Dashboard(QMainWindow):
         self._stop_bot()
         QTimer.singleShot(1000, self._start_bot)
 
-    def _on_bot_state(self, state: dict) -> None:
+    def _on_bot_state(self, data: dict) -> None:
         elapsed = int(_time.time() - self._bot_start_time)
         m, s = divmod(elapsed, 60)
         self.lbl_bot_status.setText(f"실행중 ⏱ {m}분 {s:02d}초")
+
+        # ── 카드 갱신 ──
+        balance = data.get("balance", 0)
+        daily_pnl = data.get("daily_pnl", 0)
+        risk_mode = data.get("risk_mode", "NORMAL")
+        size_mult = data.get("size_mult", 1.0)
+
+        self._set_card(self.c_bal, f"${balance:,.2f}")
+        pnl_sign = "+" if daily_pnl >= 0 else ""
+        pnl_col = C_GREEN if daily_pnl >= 0 else C_RED
+        self._set_card(self.c_pnl, f"{pnl_sign}${daily_pnl:.2f}", pnl_col)
+        initial = 198.0
+        cum_pct = ((balance - initial) / initial * 100) if initial else 0
+        cum_col = C_GREEN if cum_pct >= 0 else C_RED
+        self._set_card(self.c_cum, f"{'+' if cum_pct >= 0 else ''}{cum_pct:.1f}%", cum_col)
+        risk_col = C_GREEN if risk_mode == "NORMAL" else (
+            C_RED if risk_mode in ("HARD", "STOP") else C_YELLOW)
+        self._set_card(self.c_risk, f"{risk_mode} {size_mult}x", risk_col)
+
+        # ── 레짐 표시 갱신 ──
+        _REGIME_DISPLAY = {
+            "TREND": ("TREND \u25b2", C_GREEN),
+            "BOX": ("BOX \u2550", "#ffc107"),
+            "PROTECT": ("PROTECT \u26a0", C_RED),
+        }
+        regimes = data.get("regimes", {})
+        regime_parts = []
+        for sym in CONFIG.SYMBOLS:
+            asset = "BTC" if "BTC" in sym else "ETH"
+            regime_val = regimes.get(sym, "\u2014")
+            display, color = _REGIME_DISPLAY.get(regime_val, (regime_val, C_ACCENT))
+            regime_parts.append(
+                f"<span style='color:{color}'>{asset}: [{display}]</span>")
+        self.lbl_regime.setText("  |  ".join(regime_parts))
+
+        # ── 포지션 테이블 갱신 ──
+        positions = data.get("positions", {})
+        self.pos_table.setRowCount(0)
+        if not positions:
+            self.pos_table.setRowCount(1)
+            item = _make_item("보유 포지션 없음")
+            item.setForeground(QColor("#666"))
+            self.pos_table.setSpan(0, 0, 1, 9)
+            self.pos_table.setItem(0, 0, item)
+            self.pos_table.setRowHeight(0, 35)
+        else:
+            for key, pos in positions.items():
+                r = self.pos_table.rowCount()
+                self.pos_table.insertRow(r)
+                self.pos_table.setRowHeight(r, 35)
+                sym = pos.get("symbol", key)
+                side = pos.get("side", "?")
+                regime = pos.get("regime", "?")
+                strategy = pos.get("strategy", "?")
+                avg = pos.get("avg_price", 0)
+                tp_count = pos.get("tp_count", 0)
+                be = pos.get("be_activated", False)
+                status = "보유"
+                if tp_count >= 2:
+                    status = "트레일\u25b6"
+                elif tp_count == 1:
+                    status = "TP1\u2713"
+                if be and tp_count == 0:
+                    status = "BE\u25c9"
+                items = [
+                    _make_item(sym.split("/")[0] if "/" in sym else sym),
+                    _make_item(side.upper(),
+                               fg=QColor(C_GREEN if side == "long" else C_RED)),
+                    _make_item(regime),
+                    _make_item(strategy),
+                    _make_item(f"{avg:,.2f}"),
+                    _make_item("\u2014"),   # 현재R — 실시간 가격 없이는 계산 불가
+                    _make_item("\u2014"),   # PnL($)
+                    _make_item(str(pos.get("dca_count", 0))),
+                    _make_item(status),
+                ]
+                if side == "long":
+                    items[1].setBackground(QColor("#1b3a1b"))
+                else:
+                    items[1].setBackground(QColor("#3a1b1b"))
+                for c, it in enumerate(items):
+                    self.pos_table.setItem(r, c, it)
 
     def _on_bot_trade(self, trade: dict) -> None:
         pass  # 탭2 자동 갱신으로 처리
