@@ -23,6 +23,7 @@ class BacktestThread(QThread):
         try:
             import pandas as pd
             from fang_v10.backtest import BacktestEngine
+            from fang_v10.config import CONFIG
             from fang_v10.exchange_api import BitgetClient
 
             client = BitgetClient("", "", "", paper=True)
@@ -39,7 +40,7 @@ class BacktestThread(QThread):
                 for attempt in range(3):
                     try:
                         raw = client.exchange.fetch_ohlcv(
-                            self.symbol, "5m", since=since, limit=1000,
+                            self.symbol, CONFIG.TIMEFRAME_PRIMARY, since=since, limit=1000,
                         )
                         break
                     except Exception as e:

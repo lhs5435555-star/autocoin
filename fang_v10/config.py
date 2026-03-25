@@ -29,7 +29,7 @@ class FangConfig:
 
     # ── 심볼 (고정) ──
     SYMBOLS: list = field(default_factory=lambda: ["BTC/USDT:USDT", "ETH/USDT:USDT"])
-    TIMEFRAME_PRIMARY: str = "5m"
+    TIMEFRAME_PRIMARY: str = "15m"
     TIMEFRAME_HTF: str = "1h"
 
     # ── 리스크 ──
