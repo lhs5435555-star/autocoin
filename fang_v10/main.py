@@ -149,15 +149,17 @@ async def main_loop() -> None:
                                         gross = (pos.avg_price - price) * close_size
                                     fee = close_size * pos.avg_price * 2 * CONFIG.EFFECTIVE_TAKER_FEE
                                     pnl = gross - fee
+                                # 최종청산 시 부분청산 누적분 합산
+                                total_pnl = pnl + pos.realized_pnl
                                 r_val = pos.calc_risk_r(price)
-                                risk_eng.record_trade(pnl, symbol)
+                                risk_eng.record_trade(total_pnl, symbol)
                                 executor.record_trade_result(symbol, pos.side, reason.lower())
-                                balance += pnl
+                                balance += pnl  # 잔고엔 이번 청산분만 (부분분은 이미 반영됨)
 
                                 record = log_exit(
                                     symbol, pos.side, price, reason,
                                     f"{reason}: R={r_val:.2f}",
-                                    pnl, r_val, pos.peak_r, pos.trough_r,
+                                    total_pnl, r_val, pos.peak_r, pos.trough_r,
                                     bar_idx - pos.entry_bar, balance,
                                     regime=pos.regime, strategy=pos.strategy,
                                     entry_price=pos.avg_price,
@@ -172,14 +174,13 @@ async def main_loop() -> None:
                                 symbol, pos.side, ratio, reason,
                             )
                             if result:
-                                # 부분청산 PnL 계산
+                                # 부분청산 PnL: realized_pnl에만 누적 (record_trade는 최종청산 시)
                                 if pos.side == "long":
                                     partial_gross = (price - pos.avg_price) * partial_size
                                 else:
                                     partial_gross = (pos.avg_price - price) * partial_size
                                 partial_fee = partial_size * pos.avg_price * 2 * CONFIG.EFFECTIVE_TAKER_FEE
                                 partial_pnl = partial_gross - partial_fee
-                                risk_eng.record_trade(partial_pnl, symbol)
                                 pos.realized_pnl += partial_pnl
                                 balance += partial_pnl
 

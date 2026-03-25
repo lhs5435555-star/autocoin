@@ -195,10 +195,14 @@ class Dashboard(QMainWindow):
 
         # 카드 행
         cards = QHBoxLayout()
-        self.c_bal = _card("💰 잔고", "$—")
+        self.c_bal = _card("💰 운용 잔고", "$—")
         self.c_pnl = _card("📈 오늘 PnL", "$—")
         self.c_cum = _card("📊 누적 수익률", "—%")
         self.c_risk = _card("🛡 리스크", "—")
+        # 잔고 카드에 부가 설명
+        bal_note = QLabel("(실제 거래소 잔고와 다를 수 있음)")
+        bal_note.setStyleSheet("color:#666; font-size:9pt; margin:0; padding:0;")
+        self.c_bal.layout().addWidget(bal_note)
         for c in (self.c_bal, self.c_pnl, self.c_cum, self.c_risk):
             cards.addWidget(c)
         lay.addLayout(cards)
