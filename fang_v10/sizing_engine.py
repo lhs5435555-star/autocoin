@@ -101,8 +101,12 @@ def calc_position_size(
     # ── 레버리지 자동 결정 (청산거리 = SL×2 확보) ──
     leverage = _auto_leverage(sl_dist, asset)
 
-    # ── 마진, 수량 ──
+    # ── 마진, 수량 (마진 한도 초과 시 자동 축소) ──
     margin = notional / leverage
+    margin_limit = balance * 0.10
+    if margin > margin_limit and margin_limit > 0:
+        notional = margin_limit * leverage
+        margin = margin_limit
     amount = notional / entry
 
     # ── 청산 거리 ──
@@ -241,11 +245,10 @@ def _validate_gates(result: SizingResult, balance: float, asset: str) -> str:
     if result.sl_distance_pct >= 0.05:
         return f"SL 거리 {result.sl_distance_pct:.4%} >= 5%"
 
-    # 2. 마진 한도 (소액 계좌 허용: 최소 $30 또는 잔고의 25%)
-    margin_limit = max(30.0, balance * 0.25)
-    if balance > 0 and result.margin > margin_limit:
+    # 2. 마진 한도 (10% — 자동 축소 후에도 초과면 거부)
+    if balance > 0 and result.margin > balance * 0.10 + 0.01:
         return (f"마진 {result.margin:.2f} USDT > "
-                f"한도 {margin_limit:.2f} USDT")
+                f"잔고의 10% ({balance * 0.10:.2f} USDT)")
 
     # 3. SL/청산 비율
     if result.liq_distance_pct > 0:
