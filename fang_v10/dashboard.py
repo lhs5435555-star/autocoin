@@ -144,6 +144,8 @@ class Dashboard(QMainWindow):
         self.bot = None
         self._bt_thread = None
         self._bt_last_result = None
+        self._last_bt_df = None
+        self._last_bt_symbol = None
         self._bot_start_time = 0
 
         tabs = QTabWidget()
@@ -719,6 +721,9 @@ class Dashboard(QMainWindow):
 
     def _on_bt_finished(self, result) -> None:
         self._bt_last_result = result
+        if self._bt_thread and hasattr(self._bt_thread, 'result_df'):
+            self._last_bt_df = self._bt_thread.result_df
+            self._last_bt_symbol = self._bt_thread.symbol
         r = result
         self._set_card(self.bt_c["trades"], str(r.total_trades))
         self._set_card(self.bt_c["wr"], f"{r.winrate*100:.1f}%",
@@ -826,14 +831,14 @@ class Dashboard(QMainWindow):
         self.bt_result_area.setVisible(True)
 
     def _run_optimizer(self) -> None:
-        if not self._bt_last_result:
-            self.bt_opt_status.setText("먼저 백테스트를 실행하세요")
+        if self._last_bt_df is None:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "경고", "먼저 백테스트를 실행해주세요.")
             return
         from fang_v10.dashboard_tabs import OptimizerThread
-        # BacktestThread가 수집한 df 재사용 — 없으면 None
-        df = getattr(self._bt_thread, '_last_df', None) if self._bt_thread else None
         self._opt_thread = OptimizerThread(
-            df, self.bt_sym.currentText(), self.bt_bal.value())
+            self._last_bt_df, self._last_bt_symbol or self.bt_sym.currentText(),
+            self.bt_bal.value())
         self._opt_thread.progress.connect(self._on_opt_progress)
         self._opt_thread.finished.connect(self._on_opt_finished)
         self._opt_thread.error.connect(lambda e: self.bt_opt_status.setText(f"오류: {e}"))

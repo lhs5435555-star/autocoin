@@ -73,6 +73,7 @@ class BacktestThread(QThread):
             )
 
             if not self._cancel:
+                self.result_df = full_df
                 self.progress.emit(100, "완료")
                 self.finished.emit(result)
 
