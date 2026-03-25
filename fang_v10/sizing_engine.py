@@ -259,9 +259,9 @@ def _validate_gates(result: SizingResult, balance: float, asset: str) -> str:
     if result.leverage > max_lev:
         return f"레버리지 {result.leverage}x > 최대 {max_lev}x"
 
-    # 5. 순 RR
-    if result.net_rr < 0.8:
-        return f"순 RR {result.net_rr:.3f} < 0.8"
+    # 5. 순 RR (부분청산 전략이므로 0.6 이상이면 허용)
+    if result.net_rr < 0.6:
+        return f"순 RR {result.net_rr:.3f} < 0.6"
 
     # 6. 최소 주문 수량
     min_amount = MIN_ORDER_AMOUNT.get(asset, 0.001)

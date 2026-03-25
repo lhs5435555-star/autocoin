@@ -279,10 +279,10 @@ def _calc_sl_tp(
 
     if side == "long":
         sl = entry - r_distance
-        tp = entry + r_distance * CONFIG.TP1_R
+        tp = entry + r_distance * CONFIG.TP2_R  # 사이징 RR은 TP2 기준 (부분청산 전략)
     else:
         sl = entry + r_distance
-        tp = entry - r_distance * CONFIG.TP1_R
+        tp = entry - r_distance * CONFIG.TP2_R
 
     return round(sl, 8), round(tp, 8)
 
