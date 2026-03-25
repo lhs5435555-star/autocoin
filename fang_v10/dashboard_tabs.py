@@ -121,4 +121,87 @@ class BotThread(QThread):
         self.running = False
 
     def run(self):
-        pass
+        self.running = True
+        from fang_v10.config import CONFIG
+        from fang_v10.exchange_api import BitgetClient
+        from fang_v10.regime_engine import RegimeEngine, ensure_indicators
+        from fang_v10.position_manager import PositionManager
+        from fang_v10.risk_engine import RiskEngine
+        from fang_v10.strategy import generate_signals
+
+        try:
+            client = BitgetClient(
+                CONFIG.API_KEY, CONFIG.API_SECRET,
+                CONFIG.PASSPHRASE, CONFIG.PAPER_TRADING,
+            )
+            regime_eng = RegimeEngine()
+            pos_mgr = PositionManager()
+            risk_eng = RiskEngine()
+
+            balance = client.fetch_balance() if not CONFIG.PAPER_TRADING else 198.0
+            risk_eng.set_initial_balance(balance)
+
+            while self.running:
+                try:
+                    btc_df = None
+                    for symbol in CONFIG.SYMBOLS:
+                        df = client.fetch_ohlcv(symbol, CONFIG.TIMEFRAME_PRIMARY, 300)
+                        if df.empty:
+                            continue
+                        df = ensure_indicators(df)
+                        if "BTC" in symbol:
+                            btc_df = df
+
+                        bar_idx = len(df) - 1
+                        price = float(df.iloc[-1]["close"])
+                        regime = regime_eng.detect(symbol, df, bar_idx)
+
+                        # 포지션 관리
+                        ema9 = float(df.iloc[-1].get("ema9", price))
+                        ema21 = float(df.iloc[-1].get("ema21", price))
+                        for key in list(pos_mgr.positions.keys()):
+                            if symbol in key:
+                                exit_sig = pos_mgr.check_exit(
+                                    key, price, bar_idx,
+                                    ema9=ema9, ema21=ema21, df=df,
+                                )
+                                if exit_sig:
+                                    r_val = 0
+                                    if key in pos_mgr.positions:
+                                        r_val = pos_mgr.positions[key].calc_risk_r(price)
+                                    self.trade_executed.emit({
+                                        "symbol": symbol,
+                                        "type": exit_sig.get("reason", ""),
+                                        "price": price,
+                                        "r_value": r_val,
+                                    })
+
+                        # 신호 생성
+                        if risk_eng.can_trade():
+                            can_trade_coin, reason = risk_eng.can_trade_coin(symbol)
+                            if can_trade_coin:
+                                signals = generate_signals(symbol, df, regime, -1)
+                                if signals:
+                                    self.trade_executed.emit({
+                                        "symbol": symbol,
+                                        "type": "SIGNAL",
+                                        "side": signals[0].side,
+                                        "reason": signals[0].reason,
+                                    })
+
+                    # 상태 업데이트
+                    risk_mode = risk_eng.get_risk_mode()
+                    self.state_updated.emit({
+                        "balance": balance,
+                        "daily_pnl": getattr(risk_eng, "_daily_pnl", 0),
+                        "risk_mode": risk_mode.get("mode", "NORMAL"),
+                        "size_mult": risk_mode.get("size_mult", 1.0),
+                        "positions": len(pos_mgr.positions),
+                    })
+
+                    time.sleep(CONFIG.MAIN_LOOP_SEC)
+                except Exception as e:
+                    self.error_occurred.emit(str(e))
+                    time.sleep(30)
+        except Exception as e:
+            self.error_occurred.emit(f"봇 초기화 실패: {e}")
