@@ -119,6 +119,7 @@ class RegimeEngine:
 
     우선순위:
       1. PROTECT: ATR zscore > 2.0 OR 24H range >= 5% OR 1봉 >= 2.5%
+         OR (ADX 25~30 AND EMA 3/3 미달)
          해제 시 최소 6봉(30분) 유지
       2. TREND: ADX(14) >= 25 AND EMA 3/3 완전 정렬
       3. BOX: 나머지 전부
@@ -219,6 +220,7 @@ class RegimeEngine:
           - ATR z-score > 2.0
           - 24H(288봉) range >= 5%
           - 현재 1봉 변동 >= 2.5%
+          - ADX 25~30 AND EMA 3/3 미달 (추세 전환 초기)
         """
         # ATR z-score
         vz = row.get("volatility_zscore", 0)
@@ -243,5 +245,15 @@ class RegimeEngine:
                 range_pct = (h - l) / l
                 if range_pct >= 0.05:
                     return True
+
+        # ADX 25~30 + EMA 불완전 정렬 → 추세 전환 초기 구간, 평균회귀 위험
+        adx_val = row.get("adx", 0)
+        if 25 <= adx_val <= 30:
+            ema9 = row.get("ema9", 0)
+            ema21 = row.get("ema21", 0)
+            ema50 = row.get("ema50", 0)
+            ema_full_align = (ema9 > ema21 > ema50) or (ema9 < ema21 < ema50)
+            if not ema_full_align:
+                return True
 
         return False
