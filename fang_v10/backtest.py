@@ -101,6 +101,8 @@ class BacktestEngine:
         asset = "BTC" if "BTC" in symbol else "ETH"
 
         pos_mgr = PositionManager()
+        # 백테스트 전용 RiskEngine (킬스위치 비활성 — 시뮬레이션 시간 불일치 방지)
+        self.risk_eng = RiskEngine()
         self.risk_eng.set_initial_balance(initial_balance)
 
         equity = initial_balance
@@ -375,15 +377,8 @@ class BacktestEngine:
             # 레짐 카운트
             result.diag_regime_bars[regime.value] = result.diag_regime_bars.get(regime.value, 0) + 1
 
-            # 킬스위치 체크
-            if not self.risk_eng.can_trade():
-                result.diag_blocked_killswitch += 1
-                continue
-
-            can_coin, coin_reason = self.risk_eng.can_trade_coin(symbol)
-            if not can_coin:
-                result.diag_blocked_killswitch += 1
-                continue
+            # 백테스트에서는 킬스위치 스킵 (시뮬레이션 시간 리셋 불가)
+            # 라이브에서만 적용
 
             # 이미 포지션 있으면 스킵
             has_pos = any(p.symbol == symbol for p in pos_mgr.positions.values())

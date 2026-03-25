@@ -104,18 +104,18 @@ class TestRegime:
         assert regime == MarketRegime.BOX
 
     def test_regime_protect_volatility(self):
-        """ATR zscore=3.0 → PROTECT."""
+        """ATR zscore=3.5 → PROTECT."""
         eng = RegimeEngine()
-        df = _make_df(volatility_zscore=3.0)
+        df = _make_df(volatility_zscore=3.5)
         regime = eng.detect("BTC/USDT:USDT", df, len(df) - 1)
         assert regime == MarketRegime.PROTECT
 
     def test_regime_protect_ambiguous(self):
-        """ADX=28, EMA 2/3 (flat) → PROTECT."""
+        """ADX=28, EMA flat → TREND (PROTECT 조건 완화 후)."""
         eng = RegimeEngine()
         df = _make_df(adx=28, ema_trend="flat")
         regime = eng.detect("BTC/USDT:USDT", df, len(df) - 1)
-        assert regime == MarketRegime.PROTECT
+        assert regime == MarketRegime.TREND
 
     def test_regime_no_neutral(self):
         """어떤 입력이든 TREND/BOX/PROTECT 중 하나."""

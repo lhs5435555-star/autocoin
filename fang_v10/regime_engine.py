@@ -223,38 +223,20 @@ class RegimeEngine:
           - 현재 1봉 변동 >= 2.5%
           - ADX 25~30 AND EMA 3/3 미달 (추세 전환 초기)
         """
-        # ATR z-score
+        # ATR z-score (극단적 변동성만 — 3.0 이상)
         vz = row.get("volatility_zscore", 0)
-        if pd.notna(vz) and vz > 2.0:
+        if pd.notna(vz) and vz > 3.0:
             return True
 
-        # 1봉 변동률
+        # 1봉 변동률 (5% 이상 — 플래시 크래시급만)
         bar_open = row.get("open", 0)
         bar_close = row.get("close", 0)
         if bar_open > 0:
             bar_change = abs(bar_close - bar_open) / bar_open
-            if bar_change >= 0.025:
+            if bar_change >= 0.05:
                 return True
 
-        # 24H range (5m 기준 288봉)
-        lookback = min(288, bar_idx + 1)
-        if lookback > 1:
-            window = df.iloc[bar_idx - lookback + 1: bar_idx + 1]
-            h = window["high"].max()
-            l = window["low"].min()
-            if l > 0:
-                range_pct = (h - l) / l
-                if range_pct >= 0.05:
-                    return True
-
-        # ADX 25~30 + EMA 불완전 정렬 → 추세 전환 초기 구간, 평균회귀 위험
-        adx_val = row.get("adx", 0)
-        if 25 <= adx_val <= 30:
-            ema9 = row.get("ema9", 0)
-            ema21 = row.get("ema21", 0)
-            ema50 = row.get("ema50", 0)
-            ema_full_align = (ema9 > ema21 > ema50) or (ema9 < ema21 < ema50)
-            if not ema_full_align:
-                return True
+        # 24H range 제거 — BTC는 거의 항상 5% 이상이므로 무의미
+        # ADX 전환 구간 제거 — 너무 빈번하게 트리거됨
 
         return False
