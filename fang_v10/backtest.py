@@ -69,6 +69,7 @@ class BacktestEngine:
         symbol: str,
         initial_balance: float = 198.0,
         btc_df: Optional[pd.DataFrame] = None,
+        progress_callback=None,
     ) -> BacktestResult:
         """백테스트 실행.
 
@@ -122,7 +123,13 @@ class BacktestEngine:
                                       "TREND_REV": 0, "EMERGENCY": 0}
         dca_stats = {"attempted": 0, "executed": 0}
 
+        total_bars = len(df) - 50
+
         for i in range(50, len(df)):
+            if progress_callback and (i - 50) % 500 == 0 and total_bars > 0:
+                pct = (i - 50) / total_bars * 100
+                progress_callback(pct, "백테스트 진행중...")
+
             row = df.iloc[i]
             bar_open = row["open"]
             bar_high = row["high"]

@@ -66,7 +66,11 @@ class BacktestThread(QThread):
 
             # 2. 백테스트 실행
             engine = BacktestEngine(seed=42)
-            result = engine.run(full_df, self.symbol, self.balance)
+            result = engine.run(
+                full_df, self.symbol, self.balance,
+                progress_callback=lambda pct, msg: self.progress.emit(
+                    25 + int(pct * 0.75), msg),
+            )
 
             if not self._cancel:
                 self.progress.emit(100, "완료")
