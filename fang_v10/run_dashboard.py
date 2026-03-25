@@ -1,6 +1,13 @@
-"""PyQt5 대시보드 런처 — 더블클릭 실행용."""
+"""PyQt5 dashboard launcher."""
+import os
 import sys
 import traceback
+
+# Ensure parent directory is in sys.path so 'fang_v10' package is importable
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
 
 def main():
@@ -9,13 +16,13 @@ def main():
         from fang_v10.dashboard import Dashboard
     except ImportError as e:
         print("=" * 50)
-        print("필수 패키지가 설치되지 않았습니다.")
-        print(f"오류: {e}")
+        print("Missing packages. Run this command first:")
         print()
-        print("아래 명령어로 설치해주세요:")
-        print("  pip install -r fang_v10/requirements.txt")
+        print("  py -m pip install PyQt5 ccxt pandas matplotlib")
+        print()
+        print(f"Error: {e}")
         print("=" * 50)
-        input("\nEnter 키를 누르면 종료됩니다...")
+        input("\nPress Enter to exit...")
         sys.exit(1)
 
     try:
@@ -23,13 +30,13 @@ def main():
         window = Dashboard()
         window.show()
         sys.exit(app.exec_())
-    except Exception as e:
+    except Exception:
         print("=" * 50)
-        print("대시보드 실행 중 오류 발생:")
+        print("Dashboard error:")
         print("=" * 50)
         traceback.print_exc()
         print()
-        input("Enter 키를 누르면 종료됩니다...")
+        input("Press Enter to exit...")
         sys.exit(1)
 
 

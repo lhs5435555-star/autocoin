@@ -4,13 +4,18 @@ echo ============================================
 echo   FANG SCALPER v10 Starting...
 echo ============================================
 echo.
-python fang_v10/run_dashboard.py
+
+if exist "fang_v10\run_dashboard.py" (
+    py fang_v10\run_dashboard.py
+) else if exist "run_dashboard.py" (
+    py run_dashboard.py
+) else (
+    echo ERROR: run_dashboard.py not found
+    pause
+)
+
 if %errorlevel% neq 0 (
     echo.
-    echo ============================================
-    echo   ERROR - Please check:
-    echo   1. Python installed? (python.org)
-    echo   2. Run: pip install -r fang_v10/requirements.txt
-    echo ============================================
+    echo   ERROR - Run INSTALL.bat first
     pause
 )

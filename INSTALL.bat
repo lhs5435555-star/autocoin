@@ -4,7 +4,7 @@ echo ============================================
 echo   Installing dependencies...
 echo ============================================
 echo.
-pip install -r fang_v10/requirements.txt
+py -m pip install PyQt5 ccxt pandas matplotlib
 echo.
 echo ============================================
 echo   Done! Now double-click START.bat
