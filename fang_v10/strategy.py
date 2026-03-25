@@ -38,14 +38,16 @@ def generate_signals(
     df: pd.DataFrame,
     regime: MarketRegime,
     last_entry_candle: Optional[int] = None,
+    bar_idx: Optional[int] = None,
 ) -> List[Signal]:
     """현재 봉 기준 매매 신호 생성.
 
     Args:
         symbol: 심볼 (예: "BTC/USDT:USDT")
-        df: OHLCV DataFrame (ensure_indicators 미적용 가능)
+        df: OHLCV DataFrame (ensure_indicators 적용 완료 권장)
         regime: 현재 시장 레짐
         last_entry_candle: 마지막 진입 봉 인덱스 (중복 진입 방지)
+        bar_idx: 분석할 봉 인덱스 (None이면 마지막 봉)
 
     Returns:
         Signal 리스트 (PROTECT이면 빈 리스트)
@@ -64,7 +66,8 @@ def generate_signals(
         logger.warning("%s 데이터 부족 (%d봉) → 신호 없음", symbol, len(df))
         return []
 
-    bar_idx = len(df) - 1
+    if bar_idx is None:
+        bar_idx = len(df) - 1
     row = df.iloc[bar_idx]
 
     # ATR=0 → 0으로 나누기 방지

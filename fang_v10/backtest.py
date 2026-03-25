@@ -380,7 +380,7 @@ class BacktestEngine:
             # 쿨다운 체크
             if i < cooldown_until.get(symbol, 0):
                 # 차단 시 신호 생성 후 blocked 등록
-                signals = generate_signals(symbol, df.iloc[:i + 1], regime, last_entry_candle)
+                signals = generate_signals(symbol, df, regime, last_entry_candle, bar_idx=i)
                 for sig in signals:
                     dir_key = f"{symbol}|{sig.side}"
                     if i < sl_dir_cooldown.get(dir_key, 0):
@@ -394,7 +394,7 @@ class BacktestEngine:
                 continue
 
             # 신호 생성
-            signals = generate_signals(symbol, df.iloc[:i + 1], regime, last_entry_candle)
+            signals = generate_signals(symbol, df, regime, last_entry_candle, bar_idx=i)
             if not signals:
                 continue
 
