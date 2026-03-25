@@ -189,6 +189,9 @@ class SafeExecutor:
 
         # 7. 수량 정밀도 + 최소 명목가
         amount = self.client.format_amount(symbol, sizing.amount)
+        if amount <= 0:
+            logger.warning("수량 0 이하, 진입 차단: %s amount=%.8f", symbol, amount)
+            return None
         notional = amount * sizing.entry_price
         market_info = self.client.get_market_info(symbol)
         if notional < market_info.get("min_notional", 5):
@@ -304,7 +307,7 @@ class SafeExecutor:
             return None
 
         # 잔량 확인 → 최소주문 이하면 트리거 취소
-        remaining = total_amount - close_amount
+        remaining = max(0.0, total_amount - close_amount)
         min_amount = {"BTC": 0.001, "ETH": 0.01}.get(asset, 0.001)
         if remaining < min_amount:
             self.client.cancel_trigger_orders(symbol)

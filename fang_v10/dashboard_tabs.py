@@ -35,9 +35,19 @@ class BacktestThread(QThread):
             frames = []
 
             while since < now_ms and not self._cancel:
-                raw = client.exchange.fetch_ohlcv(
-                    self.symbol, "5m", since=since, limit=1000,
-                )
+                raw = None
+                for attempt in range(3):
+                    try:
+                        raw = client.exchange.fetch_ohlcv(
+                            self.symbol, "5m", since=since, limit=1000,
+                        )
+                        break
+                    except Exception as e:
+                        if attempt < 2:
+                            time.sleep(2 ** (attempt + 1))
+                        else:
+                            self.error.emit(f"데이터 수집 실패 (3회 재시도): {e}")
+                            return
                 if not raw:
                     break
                 df = pd.DataFrame(
@@ -62,6 +72,10 @@ class BacktestThread(QThread):
                 .sort_values("timestamp")
                 .reset_index(drop=True)
             )
+            if len(full_df) < 50:
+                self.error.emit(f"데이터 부족: {len(full_df)}봉")
+                return
+
             self.progress.emit(25, f"데이터 완료 {len(full_df)}봉")
 
             # 2. 백테스트 실행
@@ -171,7 +185,11 @@ class BotThread(QThread):
             if not CONFIG.PAPER_TRADING:
                 exchange_positions = []
                 for s in CONFIG.SYMBOLS:
-                    pos = client.get_position(s)
+                    try:
+                        pos = client.get_position(s)
+                    except Exception as e:
+                        self.log_message.emit(f"get_position 실패 {s}: {e}")
+                        pos = None
                     if pos:
                         exchange_positions.append(pos)
                 saved_pos = store.reconcile(
@@ -189,8 +207,12 @@ class BotThread(QThread):
 
                     for symbol in CONFIG.SYMBOLS:
                         # ── 1. 캔들 갱신 ──
-                        df = client.fetch_ohlcv(symbol, CONFIG.TIMEFRAME_PRIMARY, 300)
-                        if df.empty:
+                        try:
+                            df = client.fetch_ohlcv(symbol, CONFIG.TIMEFRAME_PRIMARY, 300)
+                        except Exception as e:
+                            self.log_message.emit(f"fetch_ohlcv 실패 {symbol}: {e}")
+                            continue
+                        if df is None or df.empty:
                             continue
                         df = ensure_indicators(df)
                         if "BTC" in symbol:
@@ -385,7 +407,10 @@ class BotThread(QThread):
                     if loop_count % 12 == 0 and not CONFIG.PAPER_TRADING:
                         exchange_positions = []
                         for sym in CONFIG.SYMBOLS:
-                            pos = client.get_position(sym)
+                            try:
+                                pos = client.get_position(sym)
+                            except Exception:
+                                pos = None
                             if pos:
                                 exchange_positions.append(pos)
                         local_pos = {k: vars(v) for k, v in pos_mgr.positions.items()}

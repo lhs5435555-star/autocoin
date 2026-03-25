@@ -82,6 +82,13 @@ class BacktestEngine:
         Returns:
             BacktestResult
         """
+        # Edge case: 빈 df 또는 데이터 부족
+        required_cols = {"open", "high", "low", "close", "volume"}
+        if df is None or df.empty or len(df) < 50:
+            return BacktestResult()
+        if not required_cols.issubset(set(df.columns)):
+            return BacktestResult()
+
         df = ensure_indicators(df)
         asset = "BTC" if "BTC" in symbol else "ETH"
 
@@ -439,7 +446,7 @@ class BacktestEngine:
 
         result.winrate = result.wins / result.total_trades if result.total_trades > 0 else 0
         result.avg_r = sum(all_r_results) / len(all_r_results) if all_r_results else 0
-        result.profit_factor = gross_wins / gross_losses if gross_losses > 0 else float("inf")
+        result.profit_factor = gross_wins / gross_losses if gross_losses > 0 else 0.0
         result.regime_stats = regime_stats
         result.tp_stats = tp_stats
         result.dca_stats = dca_stats

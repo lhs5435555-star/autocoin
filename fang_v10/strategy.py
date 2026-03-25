@@ -50,6 +50,10 @@ def generate_signals(
     Returns:
         Signal 리스트 (PROTECT이면 빈 리스트)
     """
+    # Edge case: df 없거나 비어있음
+    if df is None or df.empty:
+        return []
+
     # PROTECT → 진입 절대 금지
     if regime == MarketRegime.PROTECT:
         return []
@@ -62,6 +66,14 @@ def generate_signals(
 
     bar_idx = len(df) - 1
     row = df.iloc[bar_idx]
+
+    # ATR=0 → 0으로 나누기 방지
+    if float(row.get("atr", 0)) <= 0:
+        return []
+
+    # prev_close 접근 시 최소 2봉 필요
+    if len(df) < 2:
+        return []
 
     # 중복 진입 방지
     if last_entry_candle is not None and bar_idx == last_entry_candle:
