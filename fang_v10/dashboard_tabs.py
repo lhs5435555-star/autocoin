@@ -92,7 +92,20 @@ class OptimizerThread(QThread):
         self._cancel = True
 
     def run(self):
-        pass
+        try:
+            from fang_v10.optimizer import AutoOptimizer
+
+            opt = AutoOptimizer()
+            result = opt.run_optimization(
+                self.df, self.symbol, self.balance,
+            )
+
+            if not self._cancel:
+                self.progress.emit(100, "최적화 완료")
+                self.finished.emit(result)
+
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class BotThread(QThread):
