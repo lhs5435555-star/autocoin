@@ -241,10 +241,11 @@ def _validate_gates(result: SizingResult, balance: float, asset: str) -> str:
     if result.sl_distance_pct >= 0.05:
         return f"SL 거리 {result.sl_distance_pct:.4%} >= 5%"
 
-    # 2. 마진 한도
-    if balance > 0 and result.margin > balance * 0.10:
+    # 2. 마진 한도 (소액 계좌 허용: 최소 $50 또는 잔고의 20%)
+    margin_limit = max(50.0, balance * 0.20)
+    if balance > 0 and result.margin > margin_limit:
         return (f"마진 {result.margin:.2f} USDT > "
-                f"잔고의 10% ({balance * 0.10:.2f} USDT)")
+                f"한도 {margin_limit:.2f} USDT")
 
     # 3. SL/청산 비율
     if result.liq_distance_pct > 0:
