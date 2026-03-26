@@ -100,6 +100,12 @@ class BacktestEngine:
         df = ensure_indicators(df)
         asset = "BTC" if "BTC" in symbol else "ETH"
 
+        # 1H 리샘플 + 지표 (레짐용)
+        from fang_v10.regime_engine import resample_to_1h, compute_1h_indicators
+        df_1h_full = resample_to_1h(df)
+        if not df_1h_full.empty:
+            df_1h_full = compute_1h_indicators(df_1h_full)
+
         pos_mgr = PositionManager()
         # 백테스트 모드 (HALT_NEW_ENTRIES 우회 + 킬스위치 비활성)
         CONFIG._BACKTEST_MODE = True
@@ -200,8 +206,19 @@ class BacktestEngine:
                     pos.add_dca(dca_price, dca_size)
                     dca_stats["executed"] += 1
 
-            # ── 2. 레짐 판별 ──
-            regime = self.regime_eng.detect(symbol, df, i)
+            # ── 2. 레짐 판별 (1H 완성봉 기반) ──
+            # 15m bar → 1H bar 매핑 (4봉 = 1H 1봉)
+            if not df_1h_full.empty:
+                bar_1h_idx = min(i // 4, len(df_1h_full) - 1)
+                df_1h_slice = df_1h_full.iloc[:bar_1h_idx + 1]
+                if len(df_1h_slice) >= 50:
+                    from fang_v10.regime_engine import detect_regime
+                    regime_result = detect_regime(symbol, df_1h_slice)
+                    regime = regime_result.v10_regime
+                else:
+                    regime = MarketRegime.BOX
+            else:
+                regime = self.regime_eng.detect(symbol, df, i)
             regime_key = regime.value
             if regime_key not in regime_stats:
                 regime_stats[regime_key] = {"bars": 0, "trades": 0, "pnl": 0.0}
