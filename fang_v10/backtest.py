@@ -181,13 +181,27 @@ class BacktestEngine:
                     total_fee += fee
 
                     atr = df.iloc[i].get("atr", 0)
-                    pos_mgr.open_position(
+                    new_pos = pos_mgr.open_position(
                         symbol=symbol, side=pending_signal.side,
                         entry_price=slip, size=pending_sizing.amount,
                         leverage=pending_sizing.leverage, atr=atr,
                         bar_idx=i, regime=pending_signal.regime.value,
                         strategy=pending_signal.strategy,
                     )
+                    # v11: TP/SL 가격을 포지션에 설정
+                    r_dist = new_pos.initial_r_distance
+                    if pending_signal.side == "long":
+                        new_pos.sl_price = slip - r_dist
+                        new_pos.tp1_price = slip + r_dist * 1.5
+                        new_pos.tp2_price = slip + r_dist * 2.5
+                        new_pos.tp3_price = slip + r_dist * 4.0
+                    else:
+                        new_pos.sl_price = slip + r_dist
+                        new_pos.tp1_price = slip - r_dist * 1.5
+                        new_pos.tp2_price = slip - r_dist * 2.5
+                        new_pos.tp3_price = slip - r_dist * 4.0
+                    new_pos.profit_lock_price = new_pos.tp1_price
+                    new_pos.phase = "OPEN"
                     last_entry_candle = i
 
                 pending_signal = None
@@ -234,105 +248,107 @@ class BacktestEngine:
                 if pos.symbol != symbol:
                     continue
 
-                # SL/TP 도달 체크 (봉 내 high/low)
                 ema9 = df.iloc[i].get("ema9")
                 ema21 = df.iloc[i].get("ema21")
 
-                # 같은 봉 SL+TP 동시 → SL 우선
-                sl_hit = False
-                tp_hit = False
+                # v11: check_exit (상태 머신) 가 단일 진실 소스
+                # 봉 내 high/low로 SL/TP 체크
+                for check_price in [bar_low, bar_high, bar_close]:
+                    pos.update_peaks(check_price)
 
-                current_r_low = pos.calc_risk_r(bar_low)
-                current_r_high = pos.calc_risk_r(bar_high)
+                # SL 체크 (봉 내 low/high)
+                sl_hit_price = None
+                if pos.side == "long" and pos.sl_price > 0 and bar_low <= pos.sl_price:
+                    sl_hit_price = pos.sl_price
+                elif pos.side == "short" and pos.sl_price > 0 and bar_high >= pos.sl_price:
+                    sl_hit_price = pos.sl_price
 
-                if pos.side == "long":
-                    if current_r_low <= -1.0:
-                        sl_hit = True
-                    if current_r_high >= CONFIG.TP1_R and pos.tp_count == 0:
-                        tp_hit = True
-                else:
-                    if current_r_high <= -1.0:
-                        sl_hit = True
-                    if current_r_low >= CONFIG.TP1_R and pos.tp_count == 0:
-                        tp_hit = True
+                # TP 체크 (봉 내 high/low)
+                tp_hit_price = None
+                if pos.phase == "OPEN" and pos.tp1_price > 0:
+                    if pos.side == "long" and bar_high >= pos.tp1_price:
+                        tp_hit_price = pos.tp1_price
+                    elif pos.side == "short" and bar_low <= pos.tp1_price:
+                        tp_hit_price = pos.tp1_price
+                elif pos.phase == "TP1_HIT" and pos.tp2_price > 0:
+                    if pos.side == "long" and bar_high >= pos.tp2_price:
+                        tp_hit_price = pos.tp2_price
+                    elif pos.side == "short" and bar_low <= pos.tp2_price:
+                        tp_hit_price = pos.tp2_price
 
-                if sl_hit and tp_hit:
+                # SL+TP 동시 → SL 우선
+                if sl_hit_price and tp_hit_price:
                     same_bar_conflicts += 1
+                    tp_hit_price = None
 
-                # check_exit with close price for non-intrabar checks
+                # 사용할 가격 결정
+                if sl_hit_price:
+                    check_price_final = sl_hit_price
+                elif tp_hit_price:
+                    check_price_final = tp_hit_price
+                else:
+                    check_price_final = bar_close
+
                 exit_result = pos_mgr.check_exit(
-                    key, bar_close, i, ema9=ema9, ema21=ema21,
+                    key, check_price_final, i,
+                    ema9=ema9, ema21=ema21, df=df,
                 )
-
-                # Intrabar SL override
-                if sl_hit:
-                    exit_result = {"action": "close", "ratio": 1.0, "reason": "SL"}
 
                 if exit_result:
                     action = exit_result["action"]
                     reason = exit_result["reason"]
 
                     if action == "close":
-                        # 청산 가격 결정
-                        if reason == "SL":
-                            if pos.side == "long":
-                                exit_price = pos.avg_price - pos.initial_r_distance
-                            else:
-                                exit_price = pos.avg_price + pos.initial_r_distance
-                            exit_price = max(bar_low, min(bar_high, exit_price))
-                        elif reason in ("TRAIL", "EMERGENCY"):
-                            exit_price = bar_close
-                        else:
-                            exit_price = bar_close
-
+                        exit_price = check_price_final
                         exit_fill = self._apply_slippage(exit_price, pos.side, "exit")
                         fee = exit_fill * pos.total_size * CONFIG.EFFECTIVE_TAKER_FEE
                         total_fee += fee
                         total_slip += abs(exit_fill - exit_price) * pos.total_size
 
-                        # PnL 계산
-                        if pos.side == "long":
-                            pnl = (exit_fill - pos.avg_price) * pos.total_size - fee
-                        else:
-                            pnl = (pos.avg_price - exit_fill) * pos.total_size - fee
+                        # 펀딩비 계산
+                        hold_bars_n = i - pos.entry_bar
+                        # 15m 기준: 1봉 = 900초, 8시간 = 32봉
+                        funding_periods = hold_bars_n / 32
+                        funding_cost = pos.avg_price * pos.total_size * 0.0001 * funding_periods
 
+                        if pos.side == "long":
+                            pnl = (exit_fill - pos.avg_price) * pos.total_size - fee - funding_cost
+                        else:
+                            pnl = (pos.avg_price - exit_fill) * pos.total_size - fee - funding_cost
+
+                        # 부분청산 누적분 합산
+                        total_pnl = pnl + pos.realized_pnl
                         r_val = pos.calc_risk_r(exit_fill)
                         all_r_results.append(r_val)
 
-                        if pnl >= 0:
+                        if total_pnl >= 0:
                             result.wins += 1
-                            gross_wins += pnl
+                            gross_wins += total_pnl
                         else:
                             result.losses += 1
-                            gross_losses += abs(pnl)
+                            gross_losses += abs(total_pnl)
 
-                        equity += pnl
-                        result.total_pnl += pnl
+                        equity += total_pnl
+                        result.total_pnl += total_pnl
 
-                        # 통계 (진입 시점 레짐 기준)
                         tp_stats[reason] = tp_stats.get(reason, 0) + 1
                         entry_regime = pos.regime or regime_key
                         if entry_regime not in regime_stats:
-                            regime_stats[entry_regime] = {"bars": 0, "trades": 0, "pnl": 0.0}
+                            regime_stats[entry_regime] = {"bars": 0, "trades": 0, "pnl": 0.0,
+                                                          "wins": 0, "losses": 0}
                         regime_stats[entry_regime]["trades"] += 1
-                        regime_stats[entry_regime]["pnl"] += pnl
-
-                        if pos.be_activated and reason == "BE":
-                            be_exit_count += 1
-
-                        # SL 유령 등록은 check_exit에서 처리됨
-
-                        # 쿨다운 설정
-                        if reason == "SL":
-                            cd_bars = CONFIG.COOLDOWN_AFTER_SL_SEC // 300
-                            cooldown_until[symbol] = i + cd_bars
-                            sl_dir_cooldown[f"{symbol}|{pos.side}"] = (
-                                i + CONFIG.COOLDOWN_AFTER_SL_SAME_DIR_SEC // 300
-                            )
-                            self.risk_eng.record_trade(-abs(pnl), symbol)
+                        regime_stats[entry_regime]["pnl"] += total_pnl
+                        if total_pnl >= 0:
+                            regime_stats[entry_regime]["wins"] = regime_stats[entry_regime].get("wins", 0) + 1
                         else:
-                            cooldown_until[symbol] = i + CONFIG.COOLDOWN_NORMAL_SEC // 300
-                            self.risk_eng.record_trade(pnl, symbol)
+                            regime_stats[entry_regime]["losses"] = regime_stats[entry_regime].get("losses", 0) + 1
+
+                        if reason == "SL":
+                            cd_bars = CONFIG.COOLDOWN_AFTER_SL_SEC // 900  # 15m봉
+                            cooldown_until[symbol] = i + max(cd_bars, 1)
+                            sl_dir_cooldown[f"{symbol}|{pos.side}"] = (
+                                i + CONFIG.COOLDOWN_AFTER_SL_SAME_DIR_SEC // 900
+                            )
 
                         keys_to_close.append((key, exit_result))
                         result.total_trades += 1
@@ -341,30 +357,37 @@ class BacktestEngine:
                         ratio = exit_result["ratio"]
                         close_size = pos.total_size * ratio
 
-                        exit_fill = self._apply_slippage(bar_close, pos.side, "exit")
+                        exit_fill = self._apply_slippage(check_price_final, pos.side, "exit")
                         fee = exit_fill * close_size * CONFIG.EFFECTIVE_TAKER_FEE
                         total_fee += fee
 
                         if pos.side == "long":
-                            pnl = (exit_fill - pos.avg_price) * close_size - fee
+                            partial_pnl = (exit_fill - pos.avg_price) * close_size - fee
                         else:
-                            pnl = (pos.avg_price - exit_fill) * close_size - fee
+                            partial_pnl = (pos.avg_price - exit_fill) * close_size - fee
 
-                        equity += pnl
-                        result.total_pnl += pnl
-                        pos.realized_pnl += pnl
+                        equity += partial_pnl
+                        result.total_pnl += partial_pnl
+                        pos.realized_pnl += partial_pnl
                         pos.total_size -= close_size
                         pos.remaining_ratio -= ratio
                         pos.tp_count += 1
 
-                        tp_stats[reason] = tp_stats.get(reason, 0) + 1
+                        # TP1 후 새 SL 설정 (v11 상태 머신)
+                        new_sl = exit_result.get("new_sl")
+                        if new_sl:
+                            pos.sl_price = new_sl
 
+                        tp_stats[reason] = tp_stats.get(reason, 0) + 1
                         if reason == "TP1":
                             tp1_count += 1
                         elif reason == "TP2":
                             tp2_count += 1
 
                     elif action == "move_sl":
+                        new_sl = exit_result.get("new_sl")
+                        if new_sl:
+                            pos.sl_price = new_sl
                         pos.be_activated = True
                         be_activated_count += 1
 
