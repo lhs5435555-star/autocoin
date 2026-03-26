@@ -53,6 +53,15 @@ class PositionState:
     entry_bar: int = 0
     entry_time: float = 0.0
 
+    # v11 상태 머신
+    phase: str = "OPEN"             # OPEN / TP1_HIT / TP2_HIT / TRAIL_ONLY / CLOSED
+    sl_price: float = 0.0          # 현재 SL 가격 (15m 기준)
+    tp1_price: float = 0.0
+    tp2_price: float = 0.0
+    tp3_price: float = 0.0
+    profit_lock_price: float = 0.0  # = tp1_price
+    trail_sl: float = 0.0          # TRAIL_ONLY 시 사용
+
     def add_dca(self, price: float, size: float) -> None:
         """DCA 추가 진입. VWAP 평균가 재계산. initial_r_distance 불변."""
         self.entries.append((price, size))
@@ -121,6 +130,14 @@ class PositionState:
         pos.entry_time = data.get("entry_time", 0)
         pos.regime = data.get("regime", "")
         pos.strategy = data.get("strategy", "")
+        # v11 상태 머신 필드
+        pos.phase = data.get("phase", "OPEN")
+        pos.sl_price = data.get("sl_price", 0)
+        pos.tp1_price = data.get("tp1_price", 0)
+        pos.tp2_price = data.get("tp2_price", 0)
+        pos.tp3_price = data.get("tp3_price", 0)
+        pos.profit_lock_price = data.get("profit_lock_price", 0)
+        pos.trail_sl = data.get("trail_sl", 0)
         entries_raw = data.get("entries", [])
         if entries_raw:
             pos.entries = [(e[0], e[1]) for e in entries_raw if len(e) >= 2]
@@ -466,86 +483,160 @@ class PositionManager:
 
         asset = "BTC" if "BTC" in pos.symbol else "ETH"
 
-        # ── 1. 비상 SL ──
+        # ══════════════════════════════════════
+        # v11 상태 머신 기반 청산 로직
+        # ══════════════════════════════════════
+
+        # ── CLOSED 상태면 무시 ──
+        if pos.phase == "CLOSED":
+            return None
+
+        # ── 1. 비상 SL (-3.0R) — 모든 상태에서 ──
         if current_r <= -3.0:
+            pos.phase = "CLOSED"
             return {"action": "close", "ratio": 1.0, "reason": "EMERGENCY"}
 
-        # ── 2. 조기실패컷 ──
-        if (hold_bars >= CONFIG.EARLY_CUT_BARS
-                and pos.dca_count == 0
-                and pos.peak_r < CONFIG.EARLY_CUT_PEAK_R):
-            return {"action": "close", "ratio": 1.0, "reason": "EARLY"}
+        # ═══ OPEN 상태 ═══
+        if pos.phase == "OPEN":
+            # SL 체크 (15m 구조 기준 또는 R 기반)
+            sl_hit = False
+            if pos.sl_price > 0:
+                if pos.side == "long" and current_price <= pos.sl_price:
+                    sl_hit = True
+                elif pos.side == "short" and current_price >= pos.sl_price:
+                    sl_hit = True
+            elif current_r <= -1.0:
+                sl_hit = True
 
-        # ── 3. 추세역전 (TREND 전략만) ──
-        if (pos.strategy == "trend"
-                and ema9 is not None and ema21 is not None):
-            if pos.side == "long" and ema9 < ema21:
-                return {"action": "close", "ratio": 1.0, "reason": "TREND_REV"}
-            if pos.side == "short" and ema9 > ema21:
-                return {"action": "close", "ratio": 1.0, "reason": "TREND_REV"}
+            if sl_hit:
+                # 유령 추적 등록
+                sl_p = pos.sl_price or (
+                    pos.avg_price - pos.initial_r_distance if pos.side == "long"
+                    else pos.avg_price + pos.initial_r_distance)
+                tp_p = pos.tp1_price or (
+                    pos.avg_price + pos.initial_r_distance * 1.5 if pos.side == "long"
+                    else pos.avg_price - pos.initial_r_distance * 1.5)
+                self.phantom.register_sl(
+                    symbol=pos.symbol, side=pos.side,
+                    entry_price=pos.entries[0][0] if pos.entries else pos.avg_price,
+                    avg_price=pos.avg_price,
+                    sl_price=sl_p, tp_price=tp_p,
+                    sl_bar_idx=bar_idx, r_at_sl=current_r,
+                    pnl_at_sl=pos.realized_pnl,
+                )
+                pos.phase = "CLOSED"
+                return {"action": "close", "ratio": 1.0, "reason": "SL"}
 
-        # ── 4. 시간초과 ──
-        if hold_bars >= CONFIG.MAX_HOLD_BARS and current_r < 0:
-            return {"action": "close", "ratio": 1.0, "reason": "TIME"}
+            # EARLY 청산: 8봉 이내, MFE < ATR × 0.3
+            if (hold_bars >= CONFIG.EARLY_CUT_BARS
+                    and pos.dca_count == 0
+                    and pos.peak_r < CONFIG.EARLY_CUT_PEAK_R):
+                pos.phase = "CLOSED"
+                return {"action": "close", "ratio": 1.0, "reason": "EARLY"}
 
-        # ── 5. ATR SL ──
-        if current_r <= -1.0:
-            # 유령 추적 등록
-            sl_price = (pos.avg_price - pos.initial_r_distance
-                        if pos.side == "long"
-                        else pos.avg_price + pos.initial_r_distance)
-            tp_price = (pos.avg_price + pos.initial_r_distance * CONFIG.TP1_R
-                        if pos.side == "long"
-                        else pos.avg_price - pos.initial_r_distance * CONFIG.TP1_R)
-            self.phantom.register_sl(
-                symbol=pos.symbol, side=pos.side,
-                entry_price=pos.entries[0][0],
-                avg_price=pos.avg_price,
-                sl_price=sl_price, tp_price=tp_price,
-                sl_bar_idx=bar_idx,
-                r_at_sl=current_r,
-                pnl_at_sl=pos.realized_pnl,
-            )
-            return {"action": "close", "ratio": 1.0, "reason": "SL"}
+            # 추세역전 (TREND 전략만)
+            if (pos.strategy == "trend"
+                    and ema9 is not None and ema21 is not None):
+                if pos.side == "long" and ema9 < ema21:
+                    pos.phase = "CLOSED"
+                    return {"action": "close", "ratio": 1.0, "reason": "TREND_REV"}
+                if pos.side == "short" and ema9 > ema21:
+                    pos.phase = "CLOSED"
+                    return {"action": "close", "ratio": 1.0, "reason": "TREND_REV"}
 
-        # ── 6. BE 보호 ──
-        if current_r >= CONFIG.BE_TRIGGER_R and not pos.be_activated:
-            # 펀딩비 포함 BE 가격 계산
-            hold_hours = (time.time() - pos.entry_time) / 3600
-            funding_cost_pct = (hold_hours // 8) * CONFIG.FUNDING_RATE_PER_8H
-            slippage = CONFIG.SLIPPAGE.get(asset, 0.0003)
-            round_trip_cost_pct = CONFIG.EFFECTIVE_TAKER_FEE * 2 + slippage
-            total_cost_pct = round_trip_cost_pct + funding_cost_pct
+            # 시간초과
+            if hold_bars >= CONFIG.MAX_HOLD_BARS and current_r < 0:
+                pos.phase = "CLOSED"
+                return {"action": "close", "ratio": 1.0, "reason": "TIME"}
 
-            if pos.side == "long":
-                be_price = pos.avg_price * (1 + total_cost_pct)
-            else:
-                be_price = pos.avg_price * (1 - total_cost_pct)
+            # TP1 도달 → TP1_HIT 전환 (profit_lock == tp1)
+            tp1_hit = False
+            if pos.tp1_price > 0:
+                if pos.side == "long" and current_price >= pos.tp1_price:
+                    tp1_hit = True
+                elif pos.side == "short" and current_price <= pos.tp1_price:
+                    tp1_hit = True
+            elif current_r >= 1.5:  # fallback R 기준
+                tp1_hit = True
 
-            pos.be_activated = True
-            return {"action": "move_sl", "ratio": 0.0,
-                    "reason": "BE", "new_sl": round(be_price, 8)}
+            if tp1_hit and pos.tp_count == 0:
+                # 새 SL = entry + fee_buffer (수수료 보호)
+                fee_buffer = pos.avg_price * 0.0020
+                if pos.side == "long":
+                    new_sl = pos.avg_price + fee_buffer
+                else:
+                    new_sl = pos.avg_price - fee_buffer
+                pos.phase = "TP1_HIT"
+                return {"action": "partial", "ratio": 0.40, "reason": "TP1",
+                        "new_sl": round(new_sl, 8)}
 
-        # ── 7. TP1 ──
-        if current_r >= CONFIG.TP1_R and pos.tp_count == 0:
-            return {"action": "partial", "ratio": CONFIG.TP1_RATIO, "reason": "TP1"}
+        # ═══ TP1_HIT 상태 ═══
+        elif pos.phase == "TP1_HIT":
+            # SL 체크 (TP1 후 새 SL = entry + fee_buffer)
+            if pos.sl_price > 0:
+                if pos.side == "long" and current_price <= pos.sl_price:
+                    pos.phase = "CLOSED"
+                    return {"action": "close", "ratio": 1.0, "reason": "SL_AFTER_TP1"}
+                if pos.side == "short" and current_price >= pos.sl_price:
+                    pos.phase = "CLOSED"
+                    return {"action": "close", "ratio": 1.0, "reason": "SL_AFTER_TP1"}
 
-        # ── 8. TP2 ──
-        if current_r >= CONFIG.TP2_R and pos.tp_count == 1:
-            # 잔량의 60% = 전체의 약 30%
-            tp2_close_ratio = CONFIG.TP2_RATIO / (1.0 - CONFIG.TP1_RATIO)
-            return {"action": "partial", "ratio": tp2_close_ratio, "reason": "TP2"}
+            # TP2 도달
+            tp2_hit = False
+            if pos.tp2_price > 0:
+                if pos.side == "long" and current_price >= pos.tp2_price:
+                    tp2_hit = True
+                elif pos.side == "short" and current_price <= pos.tp2_price:
+                    tp2_hit = True
+            elif current_r >= 2.5:
+                tp2_hit = True
 
-        # ── 9. TP3 트레일 ──
-        if pos.tp_count >= 2:
+            if tp2_hit and pos.tp_count == 1:
+                # 잔여의 약 58% (진입 기준 35%)
+                close_ratio = 0.35 / pos.remaining_ratio if pos.remaining_ratio > 0 else 0.58
+                close_ratio = min(close_ratio, 0.99)
+                pos.phase = "TP2_HIT"
+                return {"action": "partial", "ratio": close_ratio, "reason": "TP2"}
+
+        # ═══ TP2_HIT / TRAIL_ONLY 상태 ═══
+        elif pos.phase in ("TP2_HIT", "TRAIL_ONLY"):
+            pos.phase = "TRAIL_ONLY"
+
+            # 트레일링 SL (15m EMA20 또는 구조 기반)
+            if ema9 is not None and ema21 is not None:
+                ema20_approx = (ema9 + ema21) / 2  # 근사
+                if df is not None and len(df) >= 3:
+                    if pos.side == "long":
+                        struct_sl = float(df["low"].iloc[-4:-1].min())
+                        new_trail = max(ema20_approx, struct_sl)
+                        if pos.trail_sl == 0 or new_trail > pos.trail_sl:
+                            pos.trail_sl = new_trail
+                    else:
+                        struct_sl = float(df["high"].iloc[-4:-1].max())
+                        new_trail = min(ema20_approx, struct_sl)
+                        if pos.trail_sl == 0 or new_trail < pos.trail_sl:
+                            pos.trail_sl = new_trail
+
+            # 트레일 SL 체결
+            if pos.trail_sl > 0:
+                if pos.side == "long" and current_price <= pos.trail_sl:
+                    pos.phase = "CLOSED"
+                    return {"action": "close", "ratio": 1.0, "reason": "TRAIL"}
+                if pos.side == "short" and current_price >= pos.trail_sl:
+                    pos.phase = "CLOSED"
+                    return {"action": "close", "ratio": 1.0, "reason": "TRAIL"}
+
+            # fallback: R 기반 트레일 (이전 로직 호환)
             trail_distance = pos.initial_r_distance * CONFIG.TP3_TRAIL_R
             if pos.side == "long":
                 trail_stop = pos.favorable_extreme - trail_distance
                 if current_price <= trail_stop:
+                    pos.phase = "CLOSED"
                     return {"action": "close", "ratio": 1.0, "reason": "TRAIL"}
             else:
                 trail_stop = pos.favorable_extreme + trail_distance
                 if current_price >= trail_stop:
+                    pos.phase = "CLOSED"
                     return {"action": "close", "ratio": 1.0, "reason": "TRAIL"}
 
         return None

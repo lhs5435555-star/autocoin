@@ -364,7 +364,8 @@ class TestPositionManager:
             "TREND", "trend",
         )
         pos.tp_count = 2  # TP1, TP2 완료
-        pos.be_activated = True  # BE 이미 활성화 (우선순위 6 스킵)
+        pos.phase = "TRAIL_ONLY"  # v11 상태 머신
+        pos.be_activated = True
         pos.favorable_extreme = 61000
 
         trail_dist = pos.initial_r_distance * CONFIG.TP3_TRAIL_R
@@ -421,26 +422,26 @@ class TestPositionManager:
         )
         assert exit_result is None or exit_result["reason"] != "EARLY"
 
-    def test_be_with_funding(self):
-        """8시간+ 보유 시 BE에 펀딩비 반영."""
+    def test_tp1_sets_new_sl_above_entry(self):
+        """v11: TP1 도달 시 새 SL이 entry 위에 설정됨."""
         mgr = PositionManager()
         pos = mgr.open_position(
             "BTC/USDT:USDT", "long", 60000, 0.01, 10, 300, 0,
             "TREND", "trend",
         )
-        # 시간 조작: 9시간 전 진입
-        pos.entry_time = time.time() - 9 * 3600
+        # v11 TP1 가격 설정 (1.5R)
+        pos.tp1_price = 60000 + pos.initial_r_distance * 1.5
 
-        # BE 트리거: +0.5R
-        trigger_price = 60000 + pos.initial_r_distance * CONFIG.BE_TRIGGER_R
+        # TP1 도달
         exit_result = mgr.check_exit(
-            "BTC/USDT:USDT|long", trigger_price, 100,
+            "BTC/USDT:USDT|long", pos.tp1_price + 10, 100,
         )
         assert exit_result is not None
-        assert exit_result["reason"] == "BE"
-        be_price = exit_result["new_sl"]
-        # BE에 펀딩비가 반영되어 entry보다 높아야 함
-        assert be_price > 60000
+        assert exit_result["reason"] == "TP1"
+        new_sl = exit_result["new_sl"]
+        # 새 SL은 entry + fee_buffer → entry보다 높아야 함
+        assert new_sl > 60000
+        assert pos.phase == "TP1_HIT"
 
 
 # ══════════════════════════════════════════════
