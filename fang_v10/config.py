@@ -32,6 +32,9 @@ class FangConfig:
     TIMEFRAME_PRIMARY: str = "15m"
     TIMEFRAME_HTF: str = "1h"
 
+    # ── v11 전환 중 라이브 진입 차단 ──
+    HALT_NEW_ENTRIES: bool = True
+
     # ── 리스크 ──
     RISK_PER_TRADE_PCT: float = 1.0       # 1R = 잔고의 1%
     MAX_OPEN_POSITIONS: int = 2

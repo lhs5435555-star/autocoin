@@ -56,6 +56,10 @@ def generate_signals(
     if df is None or df.empty:
         return []
 
+    # v11 전환 중 라이브 진입 전면 차단 (기존 포지션 청산은 유지)
+    if getattr(CONFIG, 'HALT_NEW_ENTRIES', False) and not getattr(CONFIG, '_BACKTEST_MODE', False):
+        return []
+
     # PROTECT → 진입 절대 금지
     if regime == MarketRegime.PROTECT:
         return []

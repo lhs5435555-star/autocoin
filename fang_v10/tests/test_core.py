@@ -133,6 +133,11 @@ class TestRegime:
 # ══════════════════════════════════════════════
 
 class TestStrategy:
+    @classmethod
+    def setup_class(cls):
+        from fang_v10.config import CONFIG
+        CONFIG._BACKTEST_MODE = True
+
     def test_trend_long(self):
         """TREND 롱 조건 충족 → Signal 생성."""
         df = _make_df(adx=30, rsi=60, ema_trend="up", volume_ratio=1.5)

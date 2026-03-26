@@ -101,7 +101,8 @@ class BacktestEngine:
         asset = "BTC" if "BTC" in symbol else "ETH"
 
         pos_mgr = PositionManager()
-        # 백테스트 전용 RiskEngine (킬스위치 비활성 — 시뮬레이션 시간 불일치 방지)
+        # 백테스트 모드 (HALT_NEW_ENTRIES 우회 + 킬스위치 비활성)
+        CONFIG._BACKTEST_MODE = True
         self.risk_eng = RiskEngine()
         self.risk_eng.set_initial_balance(initial_balance)
 
