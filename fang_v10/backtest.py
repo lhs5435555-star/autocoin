@@ -330,6 +330,7 @@ class BacktestEngine:
 
                         equity += total_pnl
                         result.total_pnl += total_pnl
+                        result.equity_curve.append(equity)  # 청산 시 equity 기록
 
                         tp_stats[reason] = tp_stats.get(reason, 0) + 1
                         entry_regime = pos.regime or regime_key
@@ -368,6 +369,7 @@ class BacktestEngine:
 
                         equity += partial_pnl
                         result.total_pnl += partial_pnl
+                        result.equity_curve.append(equity)  # 부분청산 시 equity 기록
                         pos.realized_pnl += partial_pnl
                         pos.total_size -= close_size
                         pos.remaining_ratio -= ratio
@@ -478,13 +480,7 @@ class BacktestEngine:
             pending_signal = sig
             pending_sizing = sizing
 
-            # Equity curve + drawdown
-            result.equity_curve.append(equity)
-            if equity > peak_equity:
-                peak_equity = equity
-            dd = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0
-            if dd > result.max_drawdown:
-                result.max_drawdown = dd
+            # (equity_curve는 청산/부분청산 시 기록됨)
 
         # ── 최종 통계 ──
         result.equity_curve.append(equity)
