@@ -316,7 +316,7 @@ class BacktestEngine:
                         else:
                             pnl = (pos.avg_price - exit_fill) * pos.total_size - fee - funding_cost
 
-                        # 부분청산 누적분 합산
+                        # 부분청산 누적분 합산 (승패 판정용)
                         total_pnl = pnl + pos.realized_pnl
                         r_val = pos.calc_risk_r(exit_fill)
                         all_r_results.append(r_val)
@@ -328,8 +328,9 @@ class BacktestEngine:
                             result.losses += 1
                             gross_losses += abs(total_pnl)
 
-                        equity += total_pnl
-                        result.total_pnl += total_pnl
+                        # equity에는 이번 청산분만 (부분청산분은 이미 반영됨)
+                        equity += pnl
+                        result.total_pnl += pnl
                         result.equity_curve.append(equity)  # 청산 시 equity 기록
 
                         tp_stats[reason] = tp_stats.get(reason, 0) + 1
@@ -513,6 +514,17 @@ class BacktestEngine:
         result.tp_extension_rate = tp2_count / tp1_count if tp1_count > 0 else 0
         result.same_bar_conflict_rate = (
             same_bar_conflicts / result.total_trades if result.total_trades > 0 else 0
+        )
+
+        # ── 디버그 출력 ──
+        logger.info(
+            "[DEBUG] gross_wins=%.2f gross_losses=%.2f PF=%.2f "
+            "wins=%d losses=%d total=%d "
+            "equity_start=%.2f equity_end=%.2f",
+            gross_wins, gross_losses, result.profit_factor,
+            result.wins, result.losses, result.total_trades,
+            result.equity_curve[0] if result.equity_curve else 0,
+            result.equity_curve[-1] if result.equity_curve else 0,
         )
 
         self._print_summary(result)
