@@ -205,7 +205,11 @@ def resample_to_1h(df_15m: pd.DataFrame) -> pd.DataFrame:
     if "timestamp" in df.columns:
         ts_vals = df["timestamp"]
         # 실제 ms timestamp인지 확인 (> 1e12)
-        if ts_vals.iloc[0] > 1e12:
+        first_ts = ts_vals.iloc[0]
+        if hasattr(first_ts, 'timestamp'):
+            # 이미 pandas Timestamp
+            df["dt"] = pd.to_datetime(ts_vals)
+        elif float(first_ts) > 1e12:
             df["dt"] = pd.to_datetime(ts_vals, unit="ms")
         else:
             # 테스트 데이터 (순번) → 15분 간격으로 가상 timestamp 생성

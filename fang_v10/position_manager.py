@@ -16,6 +16,30 @@ from fang_v10.config import CONFIG
 logger = logging.getLogger(__name__)
 
 
+def _safe_float(val, default: float = 0.0) -> float:
+    """Timestamp/int/float → float 안전 변환."""
+    if val is None:
+        return default
+    if hasattr(val, 'timestamp'):
+        return float(val.timestamp())
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(val, default: int = 0) -> int:
+    """Timestamp/float/int → int 안전 변환."""
+    if val is None:
+        return default
+    if hasattr(val, 'timestamp'):
+        return int(val.timestamp())
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
 # ──────────────────────────────────────────────
 # A. PositionState (개별 포지션)
 # ──────────────────────────────────────────────
@@ -126,19 +150,18 @@ class PositionState:
         pos.trough_r = data.get("trough_r", 0)
         pos.favorable_extreme = data.get("favorable_extreme", pos.avg_price)
         pos.realized_pnl = data.get("realized_pnl", 0)
-        pos.entry_bar = data.get("entry_bar", 0)
-        raw_et = data.get("entry_time", 0)
-        pos.entry_time = float(raw_et.timestamp()) if hasattr(raw_et, 'timestamp') else float(raw_et or 0)
+        pos.entry_bar = _safe_int(data.get("entry_bar", 0))
+        pos.entry_time = _safe_float(data.get("entry_time", 0))
         pos.regime = data.get("regime", "")
         pos.strategy = data.get("strategy", "")
         # v11 상태 머신 필드
         pos.phase = data.get("phase", "OPEN")
-        pos.sl_price = data.get("sl_price", 0)
-        pos.tp1_price = data.get("tp1_price", 0)
-        pos.tp2_price = data.get("tp2_price", 0)
-        pos.tp3_price = data.get("tp3_price", 0)
-        pos.profit_lock_price = data.get("profit_lock_price", 0)
-        pos.trail_sl = data.get("trail_sl", 0)
+        pos.sl_price = _safe_float(data.get("sl_price", 0))
+        pos.tp1_price = _safe_float(data.get("tp1_price", 0))
+        pos.tp2_price = _safe_float(data.get("tp2_price", 0))
+        pos.tp3_price = _safe_float(data.get("tp3_price", 0))
+        pos.profit_lock_price = _safe_float(data.get("profit_lock_price", 0))
+        pos.trail_sl = _safe_float(data.get("trail_sl", 0))
         entries_raw = data.get("entries", [])
         if entries_raw:
             pos.entries = [(e[0], e[1]) for e in entries_raw if len(e) >= 2]
@@ -397,8 +420,8 @@ class PositionManager:
             regime=regime, strategy=strategy,
             initial_r_distance=initial_r_distance,
             favorable_extreme=entry_price,
-            entry_bar=bar_idx,
-            entry_time=time.time(),
+            entry_bar=_safe_int(bar_idx),
+            entry_time=float(time.time()),
         )
 
         key = f"{symbol}|{side}"
@@ -480,7 +503,7 @@ class PositionManager:
 
         current_r = pos.calc_risk_r(current_price)
         pos.update_peaks(current_price)
-        hold_bars = bar_idx - pos.entry_bar
+        hold_bars = _safe_int(bar_idx) - _safe_int(pos.entry_bar)
 
         asset = "BTC" if "BTC" in pos.symbol else "ETH"
 

@@ -75,10 +75,6 @@ class SetupDetector15m:
 
     # TP R 배수
     TP1_R = 1.5
-
-    def __init__(self, oi_filter=None):
-        """oi_filter: OIFilter 인스턴스 (None이면 OI 조건 자동 통과)."""
-        self.oi_filter = oi_filter
     TP2_R = 2.5
     TP3_R = 4.0
 
@@ -90,6 +86,10 @@ class SetupDetector15m:
 
     # ADX 최소
     ADX_MIN = 20
+
+    def __init__(self, oi_filter=None):
+        """oi_filter: OIFilter 인스턴스 (None이면 OI 조건 자동 통과)."""
+        self.oi_filter = oi_filter
 
     def on_15m_candle_closed(
         self,
