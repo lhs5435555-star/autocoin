@@ -159,7 +159,7 @@ class Dashboard(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("FANG SCALPER v10")
+        self.setWindowTitle("FANG SCALPER v11")
         self.setMinimumSize(1400, 900)
 
         self.bot = None
@@ -188,47 +188,105 @@ class Dashboard(QMainWindow):
         self._timer.start(5000)
         self._refresh()
 
-    # ──────────── 탭 1: 현황 ────────────
+    # ──────────── 탭 1: 현황 (v11) ────────────
     def _build_tab1(self) -> QWidget:
         w = QWidget()
-        lay = QVBoxLayout(w)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
 
-        # 카드 행
+        # ── 상단 카드 행 ──
         cards = QHBoxLayout()
         self.c_bal = _card("💰 운용 잔고", "$—")
         self.c_pnl = _card("📈 오늘 PnL", "$—")
         self.c_cum = _card("📊 누적 수익률", "—%")
         self.c_risk = _card("🛡 리스크", "—")
-        # 잔고 카드에 부가 설명
         bal_note = QLabel("(실제 거래소 잔고와 다를 수 있음)")
-        bal_note.setStyleSheet("color:#666; font-size:9pt; margin:0; padding:0;")
+        bal_note.setStyleSheet("color:#666; font-size:9pt;")
         self.c_bal.layout().addWidget(bal_note)
         for c in (self.c_bal, self.c_pnl, self.c_cum, self.c_risk):
             cards.addWidget(c)
         lay.addLayout(cards)
 
-        # 포지션 테이블
-        self.pos_table = QTableWidget(0, 9)
-        self.pos_table.setHorizontalHeaderLabels(
-            ["심볼", "방향", "레짐", "전략", "평균가", "현재R", "PnL($)", "DCA", "상태"])
+        # ── v11 상태 바 (킬스위치 + DD + Funding) ──
+        status_row = QHBoxLayout()
+        self.lbl_killswitch = QLabel("\u25cf NORMAL")
+        self.lbl_killswitch.setStyleSheet(f"color:{C_GREEN}; font-size:12pt; font-weight:bold;")
+        self.lbl_dd_step = QLabel("DD: FULL 100%")
+        self.lbl_dd_step.setStyleSheet(f"color:{C_GREEN}; font-size:11pt;")
+        self.lbl_funding = QLabel("Funding: --:--")
+        self.lbl_funding.setStyleSheet(f"color:#999; font-size:11pt;")
+        status_row.addWidget(self.lbl_killswitch)
+        status_row.addWidget(self.lbl_dd_step)
+        status_row.addStretch()
+        status_row.addWidget(self.lbl_funding)
+        lay.addLayout(status_row)
+
+        # ── v11 레짐 섹션 ──
+        gb_regime = QGroupBox("1H 레짐 (완성봉 기준)")
+        regime_lay = QVBoxLayout(gb_regime)
+        self.lbl_regime = QLabel("BTC: — | ETH: —")
+        self.lbl_regime.setTextFormat(Qt.RichText)
+        self.lbl_regime.setStyleSheet(f"color:{C_ACCENT}; font-size:13pt;")
+        self.lbl_regime_time = QLabel("마지막 1H 봉: —")
+        self.lbl_regime_time.setStyleSheet("color:#666; font-size:10pt;")
+        regime_lay.addWidget(self.lbl_regime)
+        regime_lay.addWidget(self.lbl_regime_time)
+        lay.addWidget(gb_regime)
+
+        # ── v11 Setup 대기 상태 ──
+        gb_setup = QGroupBox("15m Setup 대기")
+        setup_lay = QVBoxLayout(gb_setup)
+        self.lbl_setup_btc = QLabel("BTC: [없음]")
+        self.lbl_setup_btc.setStyleSheet(f"color:#999; font-size:11pt;")
+        self.lbl_setup_eth = QLabel("ETH: [없음]")
+        self.lbl_setup_eth.setStyleSheet(f"color:#999; font-size:11pt;")
+        setup_lay.addWidget(self.lbl_setup_btc)
+        setup_lay.addWidget(self.lbl_setup_eth)
+        lay.addWidget(gb_setup)
+
+        # ── 포지션 테이블 (v11 확장) ──
+        self.pos_table = QTableWidget(0, 11)
+        self.pos_table.setHorizontalHeaderLabels([
+            "심볼", "방향", "상태", "평균가", "현재R", "PnL($)",
+            "TP1/수익보호", "서버SL", "Mark/Last", "DCA", "레짐"])
         self.pos_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.pos_table.setAlternatingRowColors(True)
         self.pos_table.verticalHeader().setVisible(False)
-        self.pos_table.setMinimumHeight(200)
+        self.pos_table.setMinimumHeight(150)
         lay.addWidget(self.pos_table, stretch=1)
 
-        # 하단 상태바
-        bot = QHBoxLayout()
-        self.lbl_regime = QLabel("BTC: — | ETH: —")
-        self.lbl_regime.setTextFormat(Qt.RichText)
-        self.lbl_regime.setStyleSheet(f"color:{C_ACCENT}; font-size:12pt;")
-        self.lbl_kill = QLabel("일간: — | 연속패: — | MDD: —")
-        self.lbl_kill.setStyleSheet(f"color:#999; font-size:12pt;")
-        bot.addWidget(self.lbl_regime)
-        bot.addStretch()
-        bot.addWidget(self.lbl_kill)
-        lay.addLayout(bot)
-        return w
+        # ── v11 OI + 실측EV ──
+        bottom_row = QHBoxLayout()
+        gb_oi = QGroupBox("OI 상태")
+        oi_lay = QVBoxLayout(gb_oi)
+        self.lbl_oi_btc = QLabel("BTC OI: \u26aa 필터 비활성")
+        self.lbl_oi_eth = QLabel("ETH OI: \u26aa 필터 비활성")
+        self.lbl_oi_btc.setStyleSheet("font-size:11pt;")
+        self.lbl_oi_eth.setStyleSheet("font-size:11pt;")
+        oi_lay.addWidget(self.lbl_oi_btc)
+        oi_lay.addWidget(self.lbl_oi_eth)
+        bottom_row.addWidget(gb_oi)
+
+        gb_ev = QGroupBox("실측 EV")
+        ev_lay = QVBoxLayout(gb_ev)
+        self.lbl_ev = QLabel("실측 EV: — (거래 부족)")
+        self.lbl_ev.setStyleSheet("font-size:11pt;")
+        self.lbl_ev_detail = QLabel("승률: —% | fee_R: 0.30R | 손익분기: —%")
+        self.lbl_ev_detail.setStyleSheet("color:#999; font-size:10pt;")
+        ev_lay.addWidget(self.lbl_ev)
+        ev_lay.addWidget(self.lbl_ev_detail)
+        bottom_row.addWidget(gb_ev)
+        lay.addLayout(bottom_row)
+
+        # ── 하단 상태 ──
+        self.lbl_kill = QLabel("일간: — | MDD: —")
+        self.lbl_kill.setStyleSheet(f"color:#999; font-size:11pt;")
+        lay.addWidget(self.lbl_kill)
+
+        scroll.setWidget(inner)
+        return scroll
 
     # ──────────── 탭 2: 거래내역 ────────────
     def _build_tab2(self) -> QWidget:
@@ -1176,7 +1234,7 @@ class Dashboard(QMainWindow):
     def _on_bot_state(self, data: dict) -> None:
         elapsed = int(_time.time() - self._bot_start_time)
         m, s = divmod(elapsed, 60)
-        self.lbl_bot_status.setText(f"실행중 ⏱ {m}분 {s:02d}초")
+        self.lbl_bot_status.setText(f"실행중 \u23f1 {m}분 {s:02d}초")
 
         # ── 카드 갱신 ──
         balance = data.get("balance", 0)
@@ -1196,32 +1254,48 @@ class Dashboard(QMainWindow):
             C_RED if risk_mode in ("HARD", "STOP") else C_YELLOW)
         self._set_card(self.c_risk, f"{risk_mode} {size_mult}x", risk_col)
 
-        # ── 레짐 표시 갱신 ──
-        _REGIME_DISPLAY = {
-            "TREND": ("TREND \u25b2", C_GREEN),
-            "BOX": ("BOX \u2550", "#ffc107"),
-            "PROTECT": ("PROTECT \u26a0", C_RED),
-        }
+        # ── v11 킬스위치 표시 ──
+        _KS = {"NORMAL": ("\u25cf NORMAL", C_GREEN),
+               "SOFT": ("\u25cf SOFT HALT", C_YELLOW),
+               "HARD": ("\u25cf HARD HALT", C_RED),
+               "STOP": ("\u25cf STOP", C_RED)}
+        ks_text, ks_col = _KS.get(risk_mode, ("\u25cf ?", C_GRAY))
+        self.lbl_killswitch.setText(ks_text)
+        self.lbl_killswitch.setStyleSheet(f"color:{ks_col}; font-size:12pt; font-weight:bold;")
+
+        # ── v11 Funding 카운트다운 ──
+        from fang_v10.oi_filter import get_minutes_to_funding
+        fund_min = get_minutes_to_funding()
+        fund_m, fund_s = divmod(int(fund_min * 60), 60)
+        if fund_min <= 10:
+            self.lbl_funding.setText(f"\u26d4 Funding {fund_m}m{fund_s:02d}s 진입차단")
+            self.lbl_funding.setStyleSheet(f"color:{C_RED}; font-size:11pt; font-weight:bold;")
+        else:
+            self.lbl_funding.setText(f"Funding: {fund_m}m{fund_s:02d}s")
+            self.lbl_funding.setStyleSheet("color:#999; font-size:11pt;")
+
+        # ── v11 레짐 표시 ──
+        _RD = {"TREND": ("TREND \u25b2", C_GREEN), "TREND_UP": ("TREND_UP \u25b2", C_GREEN),
+               "TREND_DOWN": ("TREND_DN \u25bc", C_RED), "BOX": ("BOX \u2550", "#ffc107"),
+               "PROTECT": ("NO_TRADE \u26a0", C_ORANGE), "NO_TRADE": ("NO_TRADE \u26a0", C_ORANGE)}
         regimes = data.get("regimes", {})
-        regime_parts = []
+        parts = []
         for sym in CONFIG.SYMBOLS:
             asset = "BTC" if "BTC" in sym else "ETH"
-            regime_val = regimes.get(sym, "\u2014")
-            display, color = _REGIME_DISPLAY.get(regime_val, (regime_val, C_ACCENT))
-            regime_parts.append(
-                f"<span style='color:{color}'>{asset}: [{display}]</span>")
-        self.lbl_regime.setText("  |  ".join(regime_parts))
+            rv = regimes.get(sym, "\u2014")
+            disp, col = _RD.get(rv, (rv, C_ACCENT))
+            parts.append(f"<span style='color:{col}'>{asset}: [{disp}]</span>")
+        self.lbl_regime.setText("  |  ".join(parts))
 
-        # ── 포지션 테이블 갱신 ──
+        # ── v11 포지션 테이블 ──
         positions = data.get("positions", {})
         self.pos_table.setRowCount(0)
         if not positions:
             self.pos_table.setRowCount(1)
             item = _make_item("보유 포지션 없음")
             item.setForeground(QColor("#666"))
-            self.pos_table.setSpan(0, 0, 1, 9)
+            self.pos_table.setSpan(0, 0, 1, 11)
             self.pos_table.setItem(0, 0, item)
-            self.pos_table.setRowHeight(0, 35)
         else:
             for key, pos in positions.items():
                 r = self.pos_table.rowCount()
@@ -1229,34 +1303,25 @@ class Dashboard(QMainWindow):
                 self.pos_table.setRowHeight(r, 35)
                 sym = pos.get("symbol", key)
                 side = pos.get("side", "?")
-                regime = pos.get("regime", "?")
-                strategy = pos.get("strategy", "?")
+                phase = pos.get("phase", "OPEN")
                 avg = pos.get("avg_price", 0)
-                tp_count = pos.get("tp_count", 0)
-                be = pos.get("be_activated", False)
-                status = "보유"
-                if tp_count >= 2:
-                    status = "트레일\u25b6"
-                elif tp_count == 1:
-                    status = "TP1\u2713"
-                if be and tp_count == 0:
-                    status = "BE\u25c9"
+                tp1 = pos.get("tp1_price", 0)
+                lock = pos.get("profit_lock_price", 0)
+                sl_ok = "\u2705" if pos.get("sl_price", 0) > 0 else "\u274c"
+                lock_match = "\u2705" if tp1 == lock else f"\u26a0 {lock:.0f}\u2260{tp1:.0f}"
                 items = [
                     _make_item(sym.split("/")[0] if "/" in sym else sym),
-                    _make_item(side.upper(),
-                               fg=QColor(C_GREEN if side == "long" else C_RED)),
-                    _make_item(regime),
-                    _make_item(strategy),
+                    _make_item(side.upper(), fg=QColor(C_GREEN if side == "long" else C_RED)),
+                    _make_item(phase),
                     _make_item(f"{avg:,.2f}"),
-                    _make_item("\u2014"),   # 현재R — 실시간 가격 없이는 계산 불가
-                    _make_item("\u2014"),   # PnL($)
+                    _make_item("\u2014"),
+                    _make_item("\u2014"),
+                    _make_item(f"TP1={tp1:,.0f} Lock={lock_match}"),
+                    _make_item(sl_ok),
+                    _make_item("\u2014"),
                     _make_item(str(pos.get("dca_count", 0))),
-                    _make_item(status),
+                    _make_item(pos.get("regime", "?")),
                 ]
-                if side == "long":
-                    items[1].setBackground(QColor("#1b3a1b"))
-                else:
-                    items[1].setBackground(QColor("#3a1b1b"))
                 for c, it in enumerate(items):
                     self.pos_table.setItem(r, c, it)
 
