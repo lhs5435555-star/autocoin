@@ -127,7 +127,8 @@ class PositionState:
         pos.favorable_extreme = data.get("favorable_extreme", pos.avg_price)
         pos.realized_pnl = data.get("realized_pnl", 0)
         pos.entry_bar = data.get("entry_bar", 0)
-        pos.entry_time = data.get("entry_time", 0)
+        raw_et = data.get("entry_time", 0)
+        pos.entry_time = float(raw_et.timestamp()) if hasattr(raw_et, 'timestamp') else float(raw_et or 0)
         pos.regime = data.get("regime", "")
         pos.strategy = data.get("strategy", "")
         # v11 상태 머신 필드

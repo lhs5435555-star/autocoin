@@ -154,7 +154,11 @@ class SetupDetector15m:
         r_dollar = r_dist  # 코인 1개 기준 R (실제 포지션 사이징은 sizing_engine에서)
 
         # timestamp
-        ts = int(df_15m.iloc[-1].get("timestamp", 0))
+        raw_ts = df_15m.iloc[-1].get("timestamp", 0)
+        if hasattr(raw_ts, 'timestamp'):
+            ts = int(raw_ts.timestamp() * 1000)  # pandas Timestamp → ms
+        else:
+            ts = int(raw_ts) if raw_ts else 0
         if ts == 0:
             import time
             ts = int(time.time() * 1000)

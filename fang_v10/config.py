@@ -116,7 +116,10 @@ class FangConfig:
         self.API_SECRET = os.environ.get("BITGET_API_SECRET", "")
         self.PASSPHRASE = os.environ.get("BITGET_PASSPHRASE", "")
 
-        # API 키 없으면 페이퍼 트레이딩 강제
+        # .env에서 PAPER_TRADING 읽기 (기본 True)
+        self.PAPER_TRADING = os.environ.get("PAPER_TRADING", "true").lower() != "false"
+
+        # API 키 없으면 페이퍼 트레이딩 강제 (키 있어도 .env에서 True면 페이퍼)
         if not self.API_KEY or not self.API_SECRET or not self.PASSPHRASE:
             self.PAPER_TRADING = True
             logger.warning("API 키 미설정 → PAPER_TRADING=True 강제")

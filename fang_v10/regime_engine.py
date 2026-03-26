@@ -262,7 +262,8 @@ def detect_regime(symbol: str, df_1h: pd.DataFrame,
         return default
 
     row = df_1h.iloc[-1]
-    ts = int(row.get("timestamp", 0))
+    raw_ts = row.get("timestamp", 0)
+    ts = int(raw_ts.timestamp() * 1000) if hasattr(raw_ts, 'timestamp') else int(raw_ts or 0)
 
     ema20 = float(row.get("ema20", 0))
     ema50 = float(row.get("ema50", 0))
@@ -343,7 +344,8 @@ class RegimeEngine:
         if df_1h is None or df_1h.empty:
             return self._cache.get(symbol, RegimeResult(symbol=symbol, regime="BOX"))
 
-        latest_ts = int(df_1h.iloc[-1].get("timestamp", 0))
+        _raw = df_1h.iloc[-1].get("timestamp", 0)
+        latest_ts = int(_raw.timestamp() * 1000) if hasattr(_raw, 'timestamp') else int(_raw or 0)
 
         if latest_ts != self._last_1h_ts.get(symbol):
             result = detect_regime(symbol, df_1h, df_5m)
