@@ -75,6 +75,10 @@ class SetupDetector15m:
 
     # TP R 배수
     TP1_R = 1.5
+
+    def __init__(self, oi_filter=None):
+        """oi_filter: OIFilter 인스턴스 (None이면 OI 조건 자동 통과)."""
+        self.oi_filter = oi_filter
     TP2_R = 2.5
     TP3_R = 4.0
 
@@ -245,6 +249,13 @@ class SetupDetector15m:
                            "failed_value": f"close={close:.1f} ema20={ema20:.1f}",
                            "depth": depth}
 
+        # 조건 8: OI 필터 (라이브 전용, 백테스트 자동 통과)
+        if self.oi_filter is not None and not self.oi_filter.is_bullish(
+                df.iloc[-1].get("symbol", "") if "symbol" in df.columns else ""):
+            return False, {"failed_condition": "8", "failed_name": "oi_not_bullish",
+                           "failed_value": "OI EMA6 <= EMA24",
+                           "depth": depth}
+
         diag["ema20"] = ema20
         diag["ema50"] = ema50
         diag["adx"] = adx
@@ -313,6 +324,13 @@ class SetupDetector15m:
         if close >= ema20:
             return False, {"failed_condition": "7", "failed_name": "close>=ema20",
                            "failed_value": f"close={close:.1f} ema20={ema20:.1f}",
+                           "depth": depth}
+
+        # 조건 8: OI 필터 (라이브 전용, 백테스트 자동 통과)
+        if self.oi_filter is not None and not self.oi_filter.is_bearish(
+                df.iloc[-1].get("symbol", "") if "symbol" in df.columns else ""):
+            return False, {"failed_condition": "8", "failed_name": "oi_not_bearish",
+                           "failed_value": "OI EMA6 >= EMA24",
                            "depth": depth}
 
         diag["ema20"] = ema20
